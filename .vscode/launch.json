@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run as Module",
+            "type": "python",
+            "request": "launch",
+            "module": "notebooks.batch_dqx_validation",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal"
+        }
+    ]
+}
