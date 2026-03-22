@@ -1,0 +1,2 @@
+[databricks]
+runtime = databricks.labs.dqx.workflows_runner:main
