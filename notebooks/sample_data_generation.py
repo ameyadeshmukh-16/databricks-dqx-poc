@@ -4,11 +4,17 @@
 import pandas as pd                         # to Create & store dataset
 import numpy as np                          # to introduce Controlled randomness
 import random                               # to inject bad data
+import io                                   # to write CSV to in-memory buffer for ADLS upload
 from datetime import datetime, timedelta    # to generate relalistic transaction dates
 
 #Fix Randomness - ensures reproducibility of the generated dataset across runs
 random.seed(42)
 np.random.seed(42)
+
+# --- ADLS Configuration ---
+ACCOUNT_NAME = "databricksdqxpocstorage"
+FILE_SYSTEM = "databricks-dqx"
+ADLS_PATH = f"abfss://{FILE_SYSTEM}@{ACCOUNT_NAME}.dfs.core.windows.net/data/sample/sales_transactions.csv"
 
 # Define Division Values --- Sales transactions (intentionally includes dirty records) ---
 # '011' - valid division, '540' - valid division, None - missing value, '999' - invalid code
@@ -33,7 +39,11 @@ for i in range(500):                                                            
 
 # Convert the list of records into a DataFrame
 df = pd.DataFrame(records)
-# Save the generated dataset to a CSV file
-df.to_csv(r'C:/Users/ameya/databricks-dqx-poc/data/sample/sales_transactions.csv', index=False)
+
+# Write CSV to in-memory buffer and upload directly to ADLS
+csv_buffer = io.StringIO()
+df.to_csv(csv_buffer, index=False)
+dbutils.fs.put(ADLS_PATH, csv_buffer.getvalue(), overwrite=True)
+
 # Print summary of the generated dataset
-print(f"Sales: {len(df)} rows generated")
+print(f"Sales: {len(df)} rows generated and uploaded to {ADLS_PATH}")
