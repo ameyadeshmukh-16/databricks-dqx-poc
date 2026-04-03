@@ -5,16 +5,26 @@ import pandas as pd                         # to Create & store dataset
 import numpy as np                          # to introduce Controlled randomness
 import random                               # to inject bad data
 import io                                   # to write CSV to in-memory buffer for ADLS upload
+import os                                   # to read environment variables
 from datetime import datetime, timedelta    # to generate relalistic transaction dates
+from dotenv import load_dotenv              # to load .env file with ADLS credentials
+from azure.storage.filedatalake import DataLakeServiceClient  # to upload files to ADLS
 
 #Fix Randomness - ensures reproducibility of the generated dataset across runs
 random.seed(42)
 np.random.seed(42)
 
 # --- ADLS Configuration ---
+load_dotenv()
 ACCOUNT_NAME = "databricksdqxpocstorage"
 FILE_SYSTEM = "databricks-dqx"
-ADLS_PATH = f"abfss://{FILE_SYSTEM}@{ACCOUNT_NAME}.dfs.core.windows.net/data/sample/sales_transactions.csv"
+FILE_NAME = "sales_transactions.csv"
+
+service_client = DataLakeServiceClient(
+    account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
+    credential=os.environ["AZURE_STORAGE_KEY"]
+)
+file_system_client = service_client.get_file_system_client(FILE_SYSTEM)
 
 # Define Division Values --- Sales transactions (intentionally includes dirty records) ---
 # '011' - valid division, '540' - valid division, None - missing value, '999' - invalid code
@@ -43,7 +53,19 @@ df = pd.DataFrame(records)
 # Write CSV to in-memory buffer and upload directly to ADLS
 csv_buffer = io.StringIO()
 df.to_csv(csv_buffer, index=False)
-dbutils.fs.put(ADLS_PATH, csv_buffer.getvalue(), overwrite=True)
+
+file_client = file_system_client.get_file_client(FILE_NAME)
+
+try:
+    file_client.delete_file()
+except Exception:
+    pass  # file may not exist
+
+file_client.create_file()
+data_bytes = csv_buffer.getvalue().encode("utf-8")
+file_client.append_data(data=data_bytes, offset=0, length=len(data_bytes))
+file_client.flush_data(len(data_bytes))
 
 # Print summary of the generated dataset
-print(f"Sales: {len(df)} rows generated and uploaded to {ADLS_PATH}")
+adls_full_path = f"abfss://{FILE_SYSTEM}@{ACCOUNT_NAME}.dfs.core.windows.net/{FILE_NAME}"
+print(f"Sales: {len(df)} rows generated and uploaded to {adls_full_path}")
