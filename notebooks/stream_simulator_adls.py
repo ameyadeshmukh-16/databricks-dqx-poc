@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from azure.storage.filedatalake import DataLakeServiceClient
 
-print("🚀 ADLS Stream Simulator Started")
+print("ADLS Stream Simulator Started")
 
 load_dotenv()
 
@@ -31,7 +31,7 @@ try:
 except Exception:
     directory_client.create_directory()
 
-print(f"✅ Writing to ADLS: {DIRECTORY}")
+print(f"Writing to ADLS: {DIRECTORY}")
 
 divisions = ['011', '011', '540', '011', None, '013', '011', '999']
 
