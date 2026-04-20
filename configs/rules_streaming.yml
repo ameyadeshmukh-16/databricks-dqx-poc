@@ -1,0 +1,42 @@
+# DQX Rule Configuration - Streaming - POS Events
+
+rules:
+  - name: division_allowlist
+    column: division
+    type: is_in_list
+    allowed_values: ["011", "012", "013"]
+    criticality: error
+    message: "Division not in approved allowlist"
+
+  - name: division_not_null
+    column: division
+    type: is_not_null
+    criticality: error
+    message: "Division missing in event"
+
+  - name: quantity_positive
+    column: quantity
+    type: min_value
+    min: 1
+    criticality: error
+    message: "Quantity must be at least 1"
+
+  - name: unit_price_positive
+    column: unit_price
+    type: min_value
+    min: 0.01
+    criticality: error
+    message: "Unit price must be greater than 0"
+
+  - name: event_id_not_null
+    column: event_id
+    type: is_not_null
+    criticality: error
+    message: "Event ID must not be null"
+
+  - name: coupon_division_integrity
+    column: division
+    type: custom_sql
+    sql_expression: "NOT (coupon_applied = true AND division = '540')"
+    criticality: error
+    message: "Coupon records from division 540 not permitted"
