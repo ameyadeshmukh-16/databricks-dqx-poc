@@ -18,7 +18,7 @@ Run this script locally (outside Databricks) while kafka_stream_dqx_validation.p
 is active on the cluster to observe real-time clean/quarantine splitting.
 
 Usage:
-    python kafka/producer/kafka_producer.py
+    python rtm_kafka/producer/kafka_producer.py
 """
 
 # -----------------------------------
@@ -32,7 +32,7 @@ from dotenv import load_dotenv
 from kafka import KafkaProducer
 
 # Import centralised Kafka config — SASL_SSL credentials for Azure EH
-from kafka.config.kafka_config import KAFKA_PRODUCER_CONFIG, TOPIC
+from rtm_kafka.config.kafka_config import KAFKA_PRODUCER_CONFIG, TOPIC
 
 # -----------------------------------
 # Environment

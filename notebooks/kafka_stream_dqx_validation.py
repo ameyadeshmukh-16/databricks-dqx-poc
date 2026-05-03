@@ -68,7 +68,7 @@ spark.conf.set(
 # Import centralised Kafka options from kafka/config/kafka_config.py.
 # This includes bootstrap servers, topic subscription, and SASL_SSL credentials
 # for Azure Event Hubs — no connection details are hardcoded here.
-from kafka.config.kafka_config import KAFKA_SPARK_OPTIONS, TOPIC
+from rtm_kafka.config.kafka_config import KAFKA_SPARK_OPTIONS, TOPIC
 
 print(f"📡 Kafka topic : {TOPIC}")
 print(f"📡 Bootstrap   : {KAFKA_SPARK_OPTIONS['kafka.bootstrap.servers']}")
