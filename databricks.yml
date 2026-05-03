@@ -1,19 +1,46 @@
-# This is a Databricks asset bundle definition for databricks-dqx-poc.
-# The Databricks extension requires databricks.yml configuration file.
-# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+# Databricks Asset Bundle — databricks-dqx-poc
+# See https://docs.databricks.com/dev-tools/bundles/index.html
 
 bundle:
   name: databricks-dqx-poc
+
+variables:
+  cluster_id:
+    description: "Databricks cluster ID to run jobs on"
+    default: "0503-070439-2pnm5wxs"
 
 targets:
   dev:
     mode: development
     default: true
     workspace:
-      host: https://adb-7405616830421154.14.azuredatabricks.net
+      host: https://adb-7405612409243268.8.azuredatabricks.net
 
   ## Optionally, there could be 'staging' or 'prod' targets here.
   #
   # prod:
   #   workspace:
-  #     host: https://adb-7405616830421154.14.azuredatabricks.net
+  #     host: https://adb-7405612409243268.8.azuredatabricks.net
+
+resources:
+  jobs:
+    rtm_kafka_producer:
+      name: "[RTM] Kafka Producer Job"
+      tasks:
+        - task_key: produce_events
+          notebook_task:
+            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/kafka_producer_job
+            base_parameters:
+              num_events: "1000"
+              batch_size: "10"
+              interval_seconds: "5"
+          existing_cluster_id: ${var.cluster_id}
+
+    rtm_kafka_consumer:
+      name: "[RTM] Kafka Stream DQX Validation"
+      tasks:
+        - task_key: stream_and_validate
+          notebook_task:
+            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/kafka_stream_dqx_validation
+          existing_cluster_id: ${var.cluster_id}
+          timeout_seconds: 0    # run indefinitely until stopped

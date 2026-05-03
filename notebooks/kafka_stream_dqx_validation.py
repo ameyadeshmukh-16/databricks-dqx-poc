@@ -14,7 +14,7 @@ tables — is unchanged. Rules are loaded from the governed Delta table
 latest pattern established in streaming_dqx_validation_adls.py.
 
 Architecture:
-  kafka_producer.py (local)
+  kafka_producer.py (local) / kafka_producer_job.py (Databricks Job)
        ↓  SASL_SSL / port 9093
   Azure Event Hubs (Kafka endpoint)
        ↓  .format("kafka")
@@ -26,7 +26,12 @@ Architecture:
   retail_dqx_poc.stream_events_quarantine
 
 Run: execute this notebook on a Databricks cluster while kafka_producer.py
-     is running locally to observe real-time clean/quarantine splitting.
+     is running locally (or the kafka_producer_job is active) to observe
+     real-time clean/quarantine splitting.
+
+Job mode: query.awaitTermination() at the end keeps the Databricks Job alive
+          until the stream is explicitly stopped. display() is a no-op in job
+          context and does not cause errors.
 """
 
 # -----------------------------------
@@ -35,7 +40,7 @@ Run: execute this notebook on a Databricks cluster while kafka_producer.py
 from pyspark.sql.functions import col, from_json, current_timestamp, expr, size
 from pyspark.sql.types import (
     StructType, StructField,
-    StringType, DoubleType, IntegerType, BooleanType
+    StringType, DoubleType, IntegerType, BooleanType,
 )
 import os
 from dotenv import load_dotenv
@@ -45,7 +50,27 @@ from dotenv import load_dotenv
 # -----------------------------------
 load_dotenv()
 
-print("NOTEBOOK STARTED")
+# -----------------------------------
+# Logging
+# -----------------------------------
+from src.logger import get_logger
+logger = get_logger(__name__)
+
+logger.info("NOTEBOOK STARTED")
+
+# -----------------------------------
+# Constants
+# -----------------------------------
+from config.constants import (
+    TABLE_STREAM_CLEAN,
+    TABLE_STREAM_QUARANTINE,
+    TABLE_BATCH_METRICS,
+    TABLE_RULES,
+    DATABASE,
+    STREAMING_TRIGGER_INTERVAL,
+    STREAMING_RULE_CONFIG_NAME,
+    CHECKPOINT_KAFKA,
+)
 
 # -----------------------------------
 # Spark Session
@@ -59,19 +84,16 @@ spark = DatabricksSession.builder.getOrCreate()
 # Grant Spark access to ADLS Gen2 for checkpoint state and Delta table writes
 spark.conf.set(
     "fs.azure.account.key.databricksdqxpocstorage.dfs.core.windows.net",
-    os.environ["AZURE_STORAGE_KEY"]
+    os.environ["AZURE_STORAGE_KEY"],
 )
 
 # -----------------------------------
 # Kafka Config
 # -----------------------------------
-# Import centralised Kafka options from kafka/config/kafka_config.py.
-# This includes bootstrap servers, topic subscription, and SASL_SSL credentials
-# for Azure Event Hubs — no connection details are hardcoded here.
 from rtm_kafka.config.kafka_config import KAFKA_SPARK_OPTIONS, TOPIC
 
-print(f"📡 Kafka topic : {TOPIC}")
-print(f"📡 Bootstrap   : {KAFKA_SPARK_OPTIONS['kafka.bootstrap.servers']}")
+logger.info("Kafka topic : %s", TOPIC)
+logger.info("Bootstrap   : %s", KAFKA_SPARK_OPTIONS["kafka.bootstrap.servers"])
 
 # -----------------------------------
 # DQX Rules (Delta-Driven)
@@ -88,18 +110,17 @@ dqx = DQEngine(MagicMock(spec=WorkspaceClient))
 
 checks = dqx.load_checks(
     config=TableChecksStorageConfig(
-        location="retail_dqx_poc.dq_rules_registry",   # Central Delta rule registry
-        run_config_name="streaming_event_rules"         # Only streaming rules are loaded
+        location=TABLE_RULES,
+        run_config_name=STREAMING_RULE_CONFIG_NAME,
     )
 )
 
-print(f"✅ Loaded {len(checks)} streaming rules from Delta table")
+logger.info("Loaded %d streaming rules from Delta table", len(checks))
 
 # -----------------------------------
 # Custom Check Functions
 # -----------------------------------
 # Required because our rules use the "sql_expression" function type.
-# DQX needs this mapping to know how to evaluate SQL-based conditions.
 custom_check_functions = {
     "sql_expression": lambda df, **kwargs: expr(kwargs["expression"])
 }
@@ -107,7 +128,7 @@ custom_check_functions = {
 # -----------------------------------
 # Schema
 # -----------------------------------
-# KEEP THIS IN SYNC WITH kafka_producer.py — if the schema does not match
+# KEEP THIS IN SYNC WITH event_generator.py — if the schema does not match
 # the incoming JSON payload the stream will silently produce null fields.
 event_schema = StructType([
     StructField("event_id",        StringType(),  True),
@@ -138,18 +159,15 @@ raw_stream = (
         .withColumn("ingested_at", current_timestamp())
 )
 
-print("---Stream ready---")
+logger.info("Stream ready")
 
 # -----------------------------------
 # Create Tables
 # -----------------------------------
-# Using full STRUCT schema for _errors and _warnings to preserve rich DQX
-# metadata (rule name, message, affected columns, run_id, timestamps).
-# This matches the schema used in streaming_dqx_validation_adls.py.
-spark.sql("CREATE DATABASE IF NOT EXISTS retail_dqx_poc")
+spark.sql(f"CREATE DATABASE IF NOT EXISTS {DATABASE}")
 
-spark.sql("""
-    CREATE TABLE IF NOT EXISTS retail_dqx_poc.stream_events_clean (
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_STREAM_CLEAN} (
         event_id        STRING,
         store_id        STRING,
         product_id      STRING,
@@ -172,8 +190,8 @@ spark.sql("""
     ) USING DELTA
 """)
 
-spark.sql("""
-    CREATE TABLE IF NOT EXISTS retail_dqx_poc.stream_events_quarantine (
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_STREAM_QUARANTINE} (
         event_id        STRING,
         store_id        STRING,
         product_id      STRING,
@@ -208,10 +226,8 @@ spark.sql("""
 
 # Batch-level metrics table — written from foreachBatch so each processed micro-batch
 # records its clean/quarantine split. Queried via display() below for live notebook monitoring.
-# print() inside foreachBatch goes to Spark driver logs, not the notebook output pane,
-# so this table is the only way to see per-batch results in the Databricks UI.
-spark.sql("""
-    CREATE TABLE IF NOT EXISTS retail_dqx_poc.stream_batch_metrics (
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_BATCH_METRICS} (
         batch_id          BIGINT,
         clean_count       BIGINT,
         quarantine_count  BIGINT,
@@ -220,7 +236,7 @@ spark.sql("""
     ) USING DELTA
 """)
 
-print("---Tables ready---")
+logger.info("Tables ready")
 
 # -----------------------------------
 # foreachBatch — Micro-Batch Processing
@@ -235,28 +251,29 @@ def process(batch_df, batch_id):
       3. Normalise _errors / _warnings to empty arrays (never NULL) for consistent schema
       4. Split on _errors: records with errors → quarantine, rest → clean
       5. Append both splits to their respective Delta tables
+      6. Write one metrics row to stream_batch_metrics for live notebook monitoring
     """
-    print(f"---Batch {batch_id}---")
+    logger.info("Batch %d started", batch_id)
 
     if batch_df.rdd.isEmpty():
-        print(f"Batch {batch_id}: empty, skipping")
+        logger.info("Batch %d: empty, skipping", batch_id)
         return
 
     # Apply all DQX checks; adds _errors and _warnings columns
     dq_df = dqx.apply_checks_by_metadata(
         batch_df,
         checks,
-        custom_check_functions=custom_check_functions   # Required for sql_expression rules
+        custom_check_functions=custom_check_functions,
     )
 
     # Normalise NULL arrays to empty arrays to keep Delta schema consistent
     dq_df = dq_df.withColumn(
         "_warnings",
-        expr("CASE WHEN _warnings IS NULL THEN array() ELSE _warnings END")
+        expr("CASE WHEN _warnings IS NULL THEN array() ELSE _warnings END"),
     )
     dq_df = dq_df.withColumn(
         "_errors",
-        expr("CASE WHEN _errors IS NULL THEN array() ELSE _errors END")
+        expr("CASE WHEN _errors IS NULL THEN array() ELSE _errors END"),
     )
 
     # Split: records with no errors go to clean; any error sends to quarantine
@@ -266,51 +283,55 @@ def process(batch_df, batch_id):
     clean_count      = clean.count()
     quarantine_count = quarantine.count()
 
-    clean.write.mode("append").saveAsTable("retail_dqx_poc.stream_events_clean")
-    quarantine.write.mode("append").saveAsTable("retail_dqx_poc.stream_events_quarantine")
+    clean.write.mode("append").saveAsTable(TABLE_STREAM_CLEAN)
+    quarantine.write.mode("append").saveAsTable(TABLE_STREAM_QUARANTINE)
 
-    # Write one metrics row per batch — visible in the notebook via the display() call below.
-    # This is the Databricks-idiomatic way to surface per-batch stats: print() in foreachBatch
-    # goes to driver logs only, but a Delta write is immediately visible in the streaming display.
+    logger.info(
+        "Batch %d: %d clean | %d quarantined",
+        batch_id, clean_count, quarantine_count,
+    )
+
+    # Write one metrics row per batch — visible in the notebook via display() below.
     (
         batch_df.sparkSession
             .createDataFrame(
                 [(batch_id, clean_count, quarantine_count, clean_count + quarantine_count)],
-                ["batch_id", "clean_count", "quarantine_count", "total_count"]
+                ["batch_id", "clean_count", "quarantine_count", "total_count"],
             )
             .withColumn("processed_at", current_timestamp())
             .write.mode("append")
-            .saveAsTable("retail_dqx_poc.stream_batch_metrics")
+            .saveAsTable(TABLE_BATCH_METRICS)
     )
 
 # -----------------------------------
 # Start Stream
 # -----------------------------------
-# Dedicated checkpoint path — kept separate from the Event Hubs checkpoint
-# so both pipelines can coexist without conflict during migration.
-CHECKPOINT_PATH = (
-    "abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net"
-    "/checkpoints/kafka_streaming_dqx"
-)
-
 query = (
     raw_stream.writeStream
         .foreachBatch(process)
-        .option("checkpointLocation", CHECKPOINT_PATH)
-        .trigger(processingTime="30 seconds")
+        .option("checkpointLocation", CHECKPOINT_KAFKA)
+        .trigger(processingTime=STREAMING_TRIGGER_INTERVAL)
         .start()
 )
 
-print("✅ Kafka stream started. Run kafka/producer/kafka_producer.py to send events.")
+logger.info("Kafka stream started. Run kafka_producer.py or the Kafka Producer Job to send events.")
 
 # -----------------------------------
 # Live Batch Monitor
 # -----------------------------------
 # display() on a streaming Delta source auto-refreshes in the Databricks notebook
-# output pane every time a new batch writes to stream_batch_metrics (every 30s).
-# This is the visible equivalent of the print() logs that go to driver logs only.
+# output pane every time a new batch writes to stream_batch_metrics.
+# In interactive mode this shows a live table; in job mode it is a no-op.
 display(
     spark.readStream
         .format("delta")
-        .table("retail_dqx_poc.stream_batch_metrics")
+        .table(TABLE_BATCH_METRICS)
 )
+
+# -----------------------------------
+# Keep Job Alive
+# -----------------------------------
+# awaitTermination() blocks until the stream is stopped (manually or on error).
+# This is required when running as a Databricks Job — without it the job exits
+# immediately after starting the stream, terminating the driver.
+query.awaitTermination()
