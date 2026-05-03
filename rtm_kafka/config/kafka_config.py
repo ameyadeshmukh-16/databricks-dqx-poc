@@ -4,18 +4,23 @@ Kafka Configuration — Azure Event Hubs Kafka Protocol Endpoint
 This module is the single source of truth for all Kafka connection parameters.
 It exposes two config objects:
 
-  - KAFKA_PRODUCER_CONFIG  : passed directly to kafka-python KafkaProducer(...)
+  - KAFKA_PRODUCER_CONFIG  : passed directly to confluent_kafka.Producer(...)
   - KAFKA_SPARK_OPTIONS    : passed to Spark .format("kafka").options(**...)
 
 Azure Event Hubs supports the Kafka protocol natively on port 9093.
 Authentication uses SASL_SSL with PLAIN mechanism — the existing EVENTHUB_CONN_STR
 doubles as the SASL password, so no new secrets are required.
+
+Note on client libraries:
+  - Producer uses confluent-kafka (dot-notation config keys, e.g. "bootstrap.servers")
+  - Spark consumer uses its built-in JVM Kafka connector — entirely independent
+  - kafka-python is NOT used; it has a known incompatibility with Azure Event Hubs
+    where API version auto-detection times out on first send
 """
 
 # -----------------------------------
 # Imports
 # -----------------------------------
-import json
 import os
 from dotenv import load_dotenv
 
@@ -41,16 +46,18 @@ CONSUMER_GROUP = os.environ["KAFKA_CONSUMER_GROUP"]
 EVENTHUB_CONN_STR = os.environ["EVENTHUB_CONN_STR"]
 
 # -----------------------------------
-# Producer Config (kafka-python)
+# Producer Config (confluent-kafka)
 # -----------------------------------
-# Used by KafkaProducer(**KAFKA_PRODUCER_CONFIG) in kafka/producer/kafka_producer.py
+# Used by Producer(KAFKA_PRODUCER_CONFIG) in rtm_kafka/producer/kafka_producer.py
+# confluent-kafka uses dot-notation keys (Java properties style), unlike kafka-python
+# which used underscores. Serialization is NOT specified here — confluent-kafka
+# takes raw bytes directly at produce() time, not via a config-level serializer.
 KAFKA_PRODUCER_CONFIG = {
-    "bootstrap_servers":  BOOTSTRAP_SERVERS,
-    "security_protocol":  "SASL_SSL",
-    "sasl_mechanism":     "PLAIN",
-    "sasl_plain_username": "$ConnectionString",            # Azure EH requires this literal string
-    "sasl_plain_password": EVENTHUB_CONN_STR,              # Full connection string is the password
-    "value_serializer":   lambda v: json.dumps(v).encode("utf-8"),
+    "bootstrap.servers":  BOOTSTRAP_SERVERS,
+    "security.protocol":  "SASL_SSL",
+    "sasl.mechanism":     "PLAIN",
+    "sasl.username":      "$ConnectionString",             # Azure EH requires this literal string
+    "sasl.password":      EVENTHUB_CONN_STR,               # Full connection string is the password
 }
 
 # -----------------------------------

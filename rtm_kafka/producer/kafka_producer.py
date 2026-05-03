@@ -4,9 +4,12 @@ Kafka Producer — Azure Event Hubs Kafka Protocol
 Simulates a continuous stream of retail POS sales events and sends them to
 Azure Event Hubs using the Kafka protocol endpoint (SASL_SSL, port 9093).
 
-This replaces stream_simulator.py (which targeted localhost:9092) with an
-Azure-native version. The data generation logic and bad-data injection rates
-are kept identical so downstream DQX rules are exercised the same way:
+Uses confluent-kafka (the officially recommended Python client for Azure Event Hubs).
+kafka-python is NOT used here — it has a known incompatibility with Azure EH where
+API version auto-detection causes a 60-second metadata timeout on the first send.
+
+Data generation is identical to stream_simulator.py with the same bad-data
+injection rates, so downstream DQX rules are exercised the same way:
 
   - 2% missing event_id         → triggers event_id_not_null rule
   - 6% negative quantity        → triggers quantity_positive rule
@@ -18,7 +21,7 @@ Run this script locally (outside Databricks) while kafka_stream_dqx_validation.p
 is active on the cluster to observe real-time clean/quarantine splitting.
 
 Usage:
-    python rtm_kafka/producer/kafka_producer.py
+    python -m rtm_kafka.producer.kafka_producer
 """
 
 # -----------------------------------
@@ -29,7 +32,7 @@ import random
 import time
 from datetime import datetime
 from dotenv import load_dotenv
-from kafka import KafkaProducer
+from confluent_kafka import Producer
 
 # Import centralised Kafka config — SASL_SSL credentials for Azure EH
 from rtm_kafka.config.kafka_config import KAFKA_PRODUCER_CONFIG, TOPIC
@@ -40,17 +43,27 @@ from rtm_kafka.config.kafka_config import KAFKA_PRODUCER_CONFIG, TOPIC
 load_dotenv()
 
 # -----------------------------------
+# Delivery Callback
+# -----------------------------------
+# confluent-kafka is asynchronous by default — delivery_callback is invoked
+# once per message after the broker acknowledges (or rejects) it.
+# This gives us per-message confirmation without blocking the send loop.
+def delivery_callback(err, msg):
+    if err:
+        print(f"❌ Delivery failed: {err}")                  # Surface broker-side errors immediately
+
+# -----------------------------------
 # Kafka Producer
 # -----------------------------------
-# KafkaProducer is initialised with the full Azure EH Kafka config from
-# kafka/config/kafka_config.py. This includes SASL_SSL + PLAIN auth so the
-# producer connects to Azure Event Hubs on port 9093 — no local Kafka needed.
+# Producer() accepts the config dict directly — no keyword unpacking needed.
+# Unlike kafka-python, instantiation here triggers the actual connection attempt,
+# so a failure here means auth or network issues (not a lazy-connect false positive).
 print("🚀 Initialising Kafka producer (Azure Event Hubs)...")
 
-producer = KafkaProducer(**KAFKA_PRODUCER_CONFIG)
+producer = Producer(KAFKA_PRODUCER_CONFIG)
 
-print(f"✅ Connected to {KAFKA_PRODUCER_CONFIG['bootstrap_servers']}")
-print(f"📡 Publishing to topic: {TOPIC}")
+print(f"📡 Target   : {KAFKA_PRODUCER_CONFIG['bootstrap.servers']}")
+print(f"📡 Topic    : {TOPIC}")
 
 # -----------------------------------
 # Event Generator
@@ -93,7 +106,9 @@ def generate_event(i):
 # Simulation Loop
 # -----------------------------------
 # Sends batches of 10 events every 5 seconds — same cadence as stream_simulator.py.
-# Runs indefinitely; interrupt with Ctrl+C when done testing.
+# producer.poll(0) is called after each produce() to drain the delivery callback
+# queue without blocking. producer.flush() after each batch ensures all messages
+# are acknowledged before the sleep interval.
 print("🚀 Kafka simulator started. Sending batches every 5 seconds...")
 print("   Press Ctrl+C to stop.\n")
 
@@ -101,15 +116,19 @@ i = 0
 try:
     while True:
         for _ in range(10):                                     # 10 events per batch
-            producer.send(TOPIC, generate_event(i))            # Serialised as JSON bytes
+            producer.produce(
+                TOPIC,
+                value=json.dumps(generate_event(i)).encode("utf-8"),   # Explicit JSON bytes
+                callback=delivery_callback                              # Per-message ack/error
+            )
+            producer.poll(0)                                    # Non-blocking callback drain
             i += 1                                             # Increment for unique event_id
 
-        producer.flush()                                        # Ensure all messages are delivered before sleeping
-        print(f"📡 Sent batch — total events dispatched: {i}")
+        producer.flush()                                        # Wait for all in-flight messages to be acknowledged
+        print(f"✅ Sent batch — total events dispatched: {i}")
         time.sleep(5)                                           # 5-second interval between batches
 
 except KeyboardInterrupt:
     print("\n❌ Simulator stopped by user.")
     producer.flush()
-    producer.close()
     print("✅ Producer closed cleanly.")
