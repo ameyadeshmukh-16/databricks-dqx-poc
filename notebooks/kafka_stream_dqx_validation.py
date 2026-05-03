@@ -206,6 +206,20 @@ spark.sql("""
     ) USING DELTA
 """)
 
+# Batch-level metrics table — written from foreachBatch so each processed micro-batch
+# records its clean/quarantine split. Queried via display() below for live notebook monitoring.
+# print() inside foreachBatch goes to Spark driver logs, not the notebook output pane,
+# so this table is the only way to see per-batch results in the Databricks UI.
+spark.sql("""
+    CREATE TABLE IF NOT EXISTS retail_dqx_poc.stream_batch_metrics (
+        batch_id          BIGINT,
+        clean_count       BIGINT,
+        quarantine_count  BIGINT,
+        total_count       BIGINT,
+        processed_at      TIMESTAMP
+    ) USING DELTA
+""")
+
 print("---Tables ready---")
 
 # -----------------------------------
@@ -255,7 +269,19 @@ def process(batch_df, batch_id):
     clean.write.mode("append").saveAsTable("retail_dqx_poc.stream_events_clean")
     quarantine.write.mode("append").saveAsTable("retail_dqx_poc.stream_events_quarantine")
 
-    print(f"✅ Batch {batch_id}: {clean_count} clean | {quarantine_count} quarantined")
+    # Write one metrics row per batch — visible in the notebook via the display() call below.
+    # This is the Databricks-idiomatic way to surface per-batch stats: print() in foreachBatch
+    # goes to driver logs only, but a Delta write is immediately visible in the streaming display.
+    (
+        batch_df.sparkSession
+            .createDataFrame(
+                [(batch_id, clean_count, quarantine_count, clean_count + quarantine_count)],
+                ["batch_id", "clean_count", "quarantine_count", "total_count"]
+            )
+            .withColumn("processed_at", current_timestamp())
+            .write.mode("append")
+            .saveAsTable("retail_dqx_poc.stream_batch_metrics")
+    )
 
 # -----------------------------------
 # Start Stream
@@ -276,3 +302,15 @@ query = (
 )
 
 print("✅ Kafka stream started. Run kafka/producer/kafka_producer.py to send events.")
+
+# -----------------------------------
+# Live Batch Monitor
+# -----------------------------------
+# display() on a streaming Delta source auto-refreshes in the Databricks notebook
+# output pane every time a new batch writes to stream_batch_metrics (every 30s).
+# This is the visible equivalent of the print() logs that go to driver logs only.
+display(
+    spark.readStream
+        .format("delta")
+        .table("retail_dqx_poc.stream_batch_metrics")
+)
