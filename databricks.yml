@@ -44,3 +44,23 @@ resources:
             notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/kafka_stream_dqx_validation
           existing_cluster_id: ${var.cluster_id}
           timeout_seconds: 0    # run indefinitely until stopped
+
+    rtm_batch_pipeline:
+      name: "[RTM] Batch DQX Validation"
+      tasks:
+        - task_key: stage_data
+          notebook_task:
+            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/setup_delta_tables
+            base_parameters:
+              csv_path: "abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/sales_transactions.csv"
+              database: "retail_dqx_poc"
+          existing_cluster_id: ${var.cluster_id}
+
+        - task_key: validate_data
+          depends_on:
+            - task_key: stage_data
+          notebook_task:
+            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/batch_dqx_validation
+            base_parameters:
+              database: "retail_dqx_poc"
+          existing_cluster_id: ${var.cluster_id}
