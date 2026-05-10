@@ -28,6 +28,15 @@ class Settings:
     databricks_token: str = ""
     databricks_cluster_id: str = ""
 
+    # LLM backends — all optional; only the selected backend's keys are needed
+    anthropic_api_key: str = ""
+    claude_model: str = "claude-sonnet-4-6"
+    azure_openai_api_key: str = ""
+    azure_openai_endpoint: str = ""
+    azure_openai_deployment: str = ""
+    azure_openai_api_version: str = "2024-02-01"
+    llm_backend: str = "claude"   # default backend: "claude" | "azure_openai"
+
     @classmethod
     def from_env(cls) -> "Settings":
         """Load settings from environment. Raises EnvironmentError if any required var is missing."""
@@ -53,4 +62,11 @@ class Settings:
             databricks_host         = os.environ.get("DATABRICKS_HOST", ""),
             databricks_token        = os.environ.get("DATABRICKS_TOKEN", ""),
             databricks_cluster_id   = os.environ.get("DATABRICKS_CLUSTER_ID", ""),
+            anthropic_api_key       = os.environ.get("ANTHROPIC_API_KEY", ""),
+            claude_model            = os.environ.get("CLAUDE_MODEL", "claude-sonnet-4-6"),
+            azure_openai_api_key    = os.environ.get("AZURE_OPENAI_API_KEY", ""),
+            azure_openai_endpoint   = os.environ.get("AZURE_OPENAI_ENDPOINT", ""),
+            azure_openai_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", ""),
+            azure_openai_api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+            llm_backend             = os.environ.get("LLM_BACKEND", "claude"),
         )

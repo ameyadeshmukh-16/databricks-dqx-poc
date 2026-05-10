@@ -64,3 +64,16 @@ resources:
             base_parameters:
               database: "retail_dqx_poc"
           existing_cluster_id: ${var.cluster_id}
+
+    ai_rule_suggester:
+      name: "[RTM] AI Rule Suggester"
+      tasks:
+        - task_key: suggest_rules
+          notebook_task:
+            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/ai_rule_suggester
+            base_parameters:
+              source_table: "retail_dqx_poc.sales_staging"
+              run_config_name: "batch_sales_rules"
+              context_description: "Retail POS sales transactions from brick-and-mortar stores"
+              llm_backend: "claude"
+          existing_cluster_id: ${var.cluster_id}

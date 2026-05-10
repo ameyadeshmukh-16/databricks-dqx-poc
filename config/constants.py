@@ -53,3 +53,16 @@ BAD_DATA_RATE_PRICE    = 0.04   # 4%  → triggers price_positive
 VALID_DIVISIONS   = ["011", "012", "013"]
 INVALID_DIVISIONS = ["540", None, "999"]
 ALL_DIVISIONS     = VALID_DIVISIONS + INVALID_DIVISIONS
+
+# -----------------------------------
+# AI Rule Suggester
+# -----------------------------------
+TABLE_RULES_STAGING      = f"{DATABASE}.dq_rules_staging"
+
+# Profiler
+PROFILER_SAMPLE_SIZE     = 10_000   # max rows sampled for profiling large tables
+
+# Statistical rule generator thresholds
+STAT_NULL_THRESHOLD      = 0.01    # null_pct < 1%  → suggest is_not_null
+STAT_DISTINCT_THRESHOLD  = 50      # ≤ 50 distinct values → consider is_in_list
+STAT_COVERAGE_THRESHOLD  = 0.95    # non-null coverage ≥ 95% → use observed values as allowlist
