@@ -24,12 +24,12 @@
 # Widgets — configurable when running as a Databricks Job or interactively
 dbutils.widgets.text(
     "source_table",
-    "retail_dqx_poc.sales_staging",
+    "dqx_poc_cluster_7405612409243268.retail_dqx_poc.sales_staging",
     "Source table to profile",
 )
 dbutils.widgets.text(
     "run_config_name",
-    "batch_sales_rules",
+    "sales_batch_rules",
     "Rule group name (for dq_rules_registry)",
 )
 dbutils.widgets.text(
@@ -60,7 +60,7 @@ import sys
 import os
 
 # Allow importing project modules from Repos root
-sys.path.insert(0, "/Workspace/Repos/" + os.environ.get("USER", ""))
+sys.path.insert(0, "/Workspace/Repos/" + os.environ.get("USER", "") + "/databricks-dqx-poc")
 
 from databricks.connect import DatabricksSession
 
