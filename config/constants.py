@@ -8,25 +8,26 @@ Changing a value here propagates everywhere automatically.
 # -----------------------------------
 # Database
 # -----------------------------------
+CATALOG = "dqx_poc_cluster_7405612409243268"
 DATABASE = "retail_dqx_poc"
 
 # -----------------------------------
 # Table names (fully qualified)
 # -----------------------------------
-TABLE_STREAM_CLEAN       = f"{DATABASE}.stream_events_clean"
-TABLE_STREAM_QUARANTINE  = f"{DATABASE}.stream_events_quarantine"
-TABLE_BATCH_METRICS      = f"{DATABASE}.stream_batch_metrics"
-TABLE_RULES              = f"{DATABASE}.dq_rules_registry"
-TABLE_STAGING            = f"{DATABASE}.sales_staging"
-TABLE_SALES_CLEAN        = f"{DATABASE}.sales_clean"
-TABLE_SALES_QUARANTINE   = f"{DATABASE}.sales_quarantine"
+TABLE_STREAM_CLEAN       = f"{CATALOG}.{DATABASE}.stream_events_clean"
+TABLE_STREAM_QUARANTINE  = f"{CATALOG}.{DATABASE}.stream_events_quarantine"
+TABLE_BATCH_METRICS      = f"{CATALOG}.{DATABASE}.stream_batch_metrics"
+TABLE_RULES              = f"{CATALOG}.{DATABASE}.dq_rules_registry"
+TABLE_STAGING            = f"{CATALOG}.{DATABASE}.sales_staging"
+TABLE_SALES_CLEAN        = f"{CATALOG}.{DATABASE}.sales_clean"
+TABLE_SALES_QUARANTINE   = f"{CATALOG}.{DATABASE}.sales_quarantine"
 
 # -----------------------------------
 # Streaming
 # -----------------------------------
 STREAMING_TRIGGER_INTERVAL   = "30 seconds"
 STREAMING_RULE_CONFIG_NAME   = "streaming_event_rules"
-BATCH_RULE_CONFIG_NAME       = "batch_sales_rules"
+BATCH_RULE_CONFIG_NAME       = "sales_batch_rules"
 
 # -----------------------------------
 # ADLS Gen2

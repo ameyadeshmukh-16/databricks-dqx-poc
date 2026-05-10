@@ -78,6 +78,12 @@ from config.constants import (
 from databricks.connect import DatabricksSession
 spark = DatabricksSession.builder.getOrCreate()
 
+# Enable Delta schema evolution
+spark.conf.set(
+    "spark.databricks.delta.schema.autoMerge.enabled",
+    "true"
+)
+
 # -----------------------------------
 # Storage Config
 # -----------------------------------
@@ -185,7 +191,10 @@ spark.sql(f"""
             function      : STRING,
             run_time      : TIMESTAMP,
             run_id        : STRING,
-            user_metadata : MAP<STRING, STRING>
+            user_metadata : MAP<STRING, STRING>,
+            rule_fingerprint : STRING,
+            rule_set_fingerprint : STRING,
+            skipped       : BOOLEAN
         >>
     ) USING DELTA
 """)
@@ -209,7 +218,10 @@ spark.sql(f"""
             function      : STRING,
             run_time      : TIMESTAMP,
             run_id        : STRING,
-            user_metadata : MAP<STRING, STRING>
+            user_metadata : MAP<STRING, STRING>,
+            rule_fingerprint : STRING,
+            rule_set_fingerprint : STRING,
+            skipped       : BOOLEAN
         >>,
         _warnings ARRAY<STRUCT<
             name          : STRING,
@@ -219,7 +231,10 @@ spark.sql(f"""
             function      : STRING,
             run_time      : TIMESTAMP,
             run_id        : STRING,
-            user_metadata : MAP<STRING, STRING>
+            user_metadata : MAP<STRING, STRING>,
+            rule_fingerprint : STRING,
+            rule_set_fingerprint : STRING,
+            skipped       : BOOLEAN
         >>
     ) USING DELTA
 """)
@@ -283,8 +298,17 @@ def process(batch_df, batch_id):
     clean_count      = clean.count()
     quarantine_count = quarantine.count()
 
-    clean.write.mode("append").saveAsTable(TABLE_STREAM_CLEAN)
-    quarantine.write.mode("append").saveAsTable(TABLE_STREAM_QUARANTINE)
+    #clean.write.mode("append").saveAsTable(TABLE_STREAM_CLEAN)
+    clean.write \
+    .mode("append") \
+    .option("mergeSchema", "true") \
+    .saveAsTable(TABLE_STREAM_CLEAN)
+
+    #quarantine.write.mode("append").saveAsTable(TABLE_STREAM_QUARANTINE)
+    quarantine.write \
+    .mode("append") \
+    .option("mergeSchema", "true") \
+    .saveAsTable(TABLE_STREAM_QUARANTINE)
 
     logger.info(
         "Batch %d: %d clean | %d quarantined",

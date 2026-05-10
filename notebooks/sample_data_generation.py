@@ -5,9 +5,9 @@ import pandas as pd                         # to Create & store dataset
 import numpy as np                          # to introduce Controlled randomness
 import random                               # to inject bad data
 import io                                   # to write CSV to in-memory buffer for ADLS upload
-import os                                   # to read environment variables
+#import os                                   # to read environment variables
 from datetime import datetime, timedelta    # to generate relalistic transaction dates
-from dotenv import load_dotenv              # to load .env file with ADLS credentials
+#from dotenv import load_dotenv              # to load .env file with ADLS credentials
 from azure.storage.filedatalake import DataLakeServiceClient  # to upload files to ADLS
 
 #Fix Randomness - ensures reproducibility of the generated dataset across runs
@@ -15,14 +15,20 @@ random.seed(42)
 np.random.seed(42)
 
 # --- ADLS Configuration ---
-load_dotenv()
+#load_dotenv()
 ACCOUNT_NAME = "databricksdqxpocstorage"
 FILE_SYSTEM = "databricks-dqx"
 FILE_NAME = "sales_transactions.csv"
 
+# Retrieve secret securely from Databricks Secret Scope
+storage_key = dbutils.secrets.get(
+    scope="kv-dqx-scope",
+    key="AZURE-STORAGE-KEY"
+)
+
 service_client = DataLakeServiceClient(
     account_url=f"https://{ACCOUNT_NAME}.dfs.core.windows.net",
-    credential=os.environ["AZURE_STORAGE_KEY"]
+    credential=storage_key
 )
 file_system_client = service_client.get_file_system_client(FILE_SYSTEM)
 

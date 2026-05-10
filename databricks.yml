@@ -28,8 +28,8 @@ resources:
       name: "[RTM] Kafka Producer Job"
       tasks:
         - task_key: produce_events
-          notebook_task:
-            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/kafka_producer_job
+          spark_python_task:
+            python_file: ./notebooks/kafka_producer_job.py
             base_parameters:
               num_events: "1000"
               batch_size: "10"
@@ -40,8 +40,8 @@ resources:
       name: "[RTM] Kafka Stream DQX Validation"
       tasks:
         - task_key: stream_and_validate
-          notebook_task:
-            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/kafka_stream_dqx_validation
+          spark_python_task:
+            python_file: ./notebooks/kafka_stream_dqx_validation.py
           existing_cluster_id: ${var.cluster_id}
           timeout_seconds: 0    # run indefinitely until stopped
 
@@ -49,8 +49,8 @@ resources:
       name: "[RTM] Batch DQX Validation"
       tasks:
         - task_key: stage_data
-          notebook_task:
-            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/setup_delta_tables
+          spark_python_task:
+            python_file: ./notebooks/setup_delta_tables.py
             base_parameters:
               csv_path: "abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/sales_transactions.csv"
               database: "retail_dqx_poc"
@@ -59,8 +59,8 @@ resources:
         - task_key: validate_data
           depends_on:
             - task_key: stage_data
-          notebook_task:
-            notebook_path: /Repos/${workspace.current_user.userName}/databricks-dqx-poc/notebooks/batch_dqx_validation
+          spark_python_task:
+            python_file: ./notebooks/batch_dqx_validation.py
             base_parameters:
               database: "retail_dqx_poc"
           existing_cluster_id: ${var.cluster_id}

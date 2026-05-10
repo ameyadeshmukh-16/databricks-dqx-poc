@@ -24,7 +24,7 @@ Flow:
 from databricks.labs.dqx.engine import DQEngine
 from databricks.sdk import WorkspaceClient
 from databricks.labs.dqx.config import TableChecksStorageConfig
-from pyspark.sql.functions import col, expr
+from pyspark.sql.functions import col, expr, size
 from databricks.connect import DatabricksSession
 
 # -----------------------------------
@@ -99,8 +99,13 @@ dq_df = dqx.apply_checks_by_metadata(
 # -----------------------------------
 # Split Clean vs Quarantine
 # -----------------------------------
-good_df       = dq_df.filter(col("_errors").isNull())
-quarantine_df = dq_df.filter(col("_errors").isNotNull())
+good_df = dq_df.filter(
+    (col("_errors").isNull()) | (size(col("_errors")) == 0)
+)
+
+quarantine_df = dq_df.filter(
+    (col("_errors").isNotNull()) & (size(col("_errors")) > 0)
+)
 
 # -----------------------------------
 # Summary Counts
