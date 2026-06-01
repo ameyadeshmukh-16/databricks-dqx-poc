@@ -8,7 +8,7 @@ Changing a value here propagates everywhere automatically.
 # -----------------------------------
 # Database
 # -----------------------------------
-CATALOG = "dqx_poc_cluster_7405612409243268"
+CATALOG = "dqx_poc_cluster_7405619883480512"
 DATABASE = "retail_dqx_poc"
 
 # -----------------------------------

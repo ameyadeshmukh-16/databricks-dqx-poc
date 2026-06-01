@@ -72,7 +72,7 @@ resources:
           spark_python_task:
             python_file: ./notebooks/ai_rule_suggester.py
             base_parameters:
-              source_table: "dqx_poc_cluster_7405612409243268.retail_dqx_poc.sales_staging"
+              source_table: "dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_staging"
               run_config_name: "sales_batch_rules"
               context_description: "Retail POS sales transactions from brick-and-mortar stores"
               llm_backend: "openrouter"
