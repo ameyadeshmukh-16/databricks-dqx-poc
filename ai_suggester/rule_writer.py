@@ -139,18 +139,51 @@ def promote_rule(rule_id: str, reviewed_by: str, spark) -> None:
         WHERE rule_id = '{rule_id}'
     """)
 
-    # Insert into live registry
+    # Insert into live registry — DQX native nested schema
+    from pyspark.sql.types import (
+        StructType, StructField, StringType, ArrayType, MapType, TimestampType,
+    )
+
     constraint_obj = json.loads(row["constraint"] or "{}")
+
+    # sql_expression rules embed the column in the expression string; no for_each_column needed
+    for_each_col = [] if row["function"] == "sql_expression" else (
+        [row["column_name"]] if row["column_name"] else []
+    )
+
     registry_row = {
-        "name":            row["name"],
-        "run_config_name": row["run_config_name"],
-        "column":          row["column_name"],
-        "function":        row["function"],
-        "criticality":     row["criticality"],
-        "message":         row["message"],
-        **constraint_obj,
+        "name":                 row["name"],
+        "criticality":          row["criticality"],
+        "check": {
+            "function":         row["function"],
+            "for_each_column":  for_each_col,
+            "arguments":        {k: str(v) for k, v in constraint_obj.items()},
+        },
+        "filter":               None,
+        "run_config_name":      row["run_config_name"],
+        "user_metadata":        {"message": row["message"]} if row["message"] else {},
+        "created_at":           now,
+        "rule_fingerprint":     None,
+        "rule_set_fingerprint": None,
     }
-    reg_df = spark.createDataFrame([registry_row])
+
+    registry_schema = StructType([
+        StructField("name",                 StringType(),  True),
+        StructField("criticality",          StringType(),  True),
+        StructField("check", StructType([
+            StructField("function",         StringType(),  True),
+            StructField("for_each_column",  ArrayType(StringType()), True),
+            StructField("arguments",        MapType(StringType(), StringType()), True),
+        ]),                                                True),
+        StructField("filter",               StringType(),  True),
+        StructField("run_config_name",      StringType(),  True),
+        StructField("user_metadata",        MapType(StringType(), StringType()), True),
+        StructField("created_at",           TimestampType(), True),
+        StructField("rule_fingerprint",     StringType(),  True),
+        StructField("rule_set_fingerprint", StringType(),  True),
+    ])
+
+    reg_df = spark.createDataFrame([registry_row], schema=registry_schema)
     reg_df.write.format("delta").mode("append").saveAsTable(TABLE_RULES)
 
     logger.info("Promoted rule '%s' (%s) to %s", row["name"], rule_id, TABLE_RULES)
