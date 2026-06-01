@@ -35,7 +35,12 @@ class Settings:
     azure_openai_endpoint: str = ""
     azure_openai_deployment: str = ""
     azure_openai_api_version: str = "2024-02-01"
-    llm_backend: str = "claude"   # default backend: "claude" | "azure_openai"
+    llm_backend: str = "claude"   # default backend: "claude" | "azure_openai" | "openrouter"
+
+    # OpenRouter — OpenAI-compatible aggregator with free-tier models
+    openrouter_api_key: str = ""
+    openrouter_model:   str = ""   # empty → backend defaults to "openrouter/auto"
+    openai_base_url:    str = ""   # empty → backend defaults to "https://openrouter.ai/api/v1"
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -69,4 +74,7 @@ class Settings:
             azure_openai_deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT", ""),
             azure_openai_api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01"),
             llm_backend             = os.environ.get("LLM_BACKEND", "claude"),
+            openrouter_api_key      = os.environ.get("OPENROUTER_API_KEY", ""),
+            openrouter_model        = os.environ.get("OPENROUTER_MODEL", ""),
+            openai_base_url         = os.environ.get("OPENAI_BASE_URL", ""),
         )

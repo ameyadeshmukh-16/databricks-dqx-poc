@@ -15,7 +15,8 @@
 # MAGIC 4. Write all suggestions to `dq_rules_staging` (status = pending)
 # MAGIC 5. Review the table below and promote/reject rules via SQL
 # MAGIC
-# MAGIC **Required cluster env vars:**
+# MAGIC **Required cluster env vars (add only the backend you intend to use):**
+# MAGIC - `OPENROUTER_API_KEY` + `LLM_BACKEND=openrouter` (if using OpenRouter — free models available)
 # MAGIC - `ANTHROPIC_API_KEY` (if using Claude)
 # MAGIC - `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_DEPLOYMENT` (if using Azure OpenAI)
 
@@ -39,8 +40,8 @@ dbutils.widgets.text(
 )
 dbutils.widgets.dropdown(
     "llm_backend",
-    "claude",
-    ["claude", "azure_openai"],
+    "openrouter",
+    ["openrouter", "claude", "azure_openai"],
     "LLM backend",
 )
 
