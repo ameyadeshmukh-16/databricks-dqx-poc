@@ -110,3 +110,30 @@ def test_empty_dataframe_returns_empty_profile(spark):
     df = spark.createDataFrame([], schema=schema)
     profile = profile_dataframe(df, sample_size=100)
     assert profile == {}
+
+
+def test_dqx_metadata_columns_skipped(spark):
+    schema = StructType([
+        StructField("event_id", StringType(), True),
+        StructField("_errors",  StringType(), True),
+        StructField("_warnings", StringType(), True),
+    ])
+    df = spark.createDataFrame([("EVT001", "[]", "[]")], schema=schema)
+    profile = profile_dataframe(df, sample_size=100)
+    assert "event_id" in profile
+    assert "_errors" not in profile
+    assert "_warnings" not in profile
+
+
+def test_complex_type_columns_handled(spark):
+    from pyspark.sql.types import MapType
+    schema = StructType([
+        StructField("name",     StringType(),                        True),
+        StructField("metadata", MapType(StringType(), StringType()), True),
+    ])
+    df = spark.createDataFrame([("Alice", {"k": "v"})], schema=schema)
+    profile = profile_dataframe(df, sample_size=100)
+    assert "name" in profile
+    assert "metadata" in profile
+    assert profile["metadata"]["sample_values"] == []
+    assert profile["metadata"]["distinct_count"] == 0

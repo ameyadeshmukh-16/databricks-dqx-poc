@@ -20,6 +20,8 @@ _NUMERIC_TYPES = {
     "FloatType", "DoubleType", "DecimalType",
 }
 
+_COMPLEX_TYPES = {"MapType", "ArrayType", "StructType"}
+
 
 def profile_dataframe(df: "DataFrame", sample_size: int = PROFILER_SAMPLE_SIZE) -> dict:
     """
@@ -57,16 +59,25 @@ def profile_dataframe(df: "DataFrame", sample_size: int = PROFILER_SAMPLE_SIZE) 
 
     for field in df.schema.fields:
         col_name = field.name
+
+        # Skip DQX-internal metadata columns (_errors, _warnings) — complex nested types,
+        # not business data; rule generation against them is meaningless
+        if col_name.startswith("_"):
+            logger.debug("  %s: skipped (DQX metadata column)", col_name)
+            continue
+
         dtype_name = type(field.dataType).__name__
         is_numeric = dtype_name in _NUMERIC_TYPES
+        is_complex = dtype_name in _COMPLEX_TYPES
 
         col = F.col(col_name)
 
         # Core aggregations run in a single Spark pass
         agg_exprs = [
             F.count(F.when(col.isNull(), 1)).alias("null_count"),
-            F.countDistinct(col).alias("distinct_count"),
         ]
+        if not is_complex:
+            agg_exprs.append(F.countDistinct(col).alias("distinct_count"))
         if is_numeric:
             agg_exprs += [
                 F.min(col).cast("double").alias("min_val"),
@@ -79,7 +90,7 @@ def profile_dataframe(df: "DataFrame", sample_size: int = PROFILER_SAMPLE_SIZE) 
 
         null_count = agg_row["null_count"] or 0
         null_pct = null_count / sample_rows if sample_rows > 0 else 0.0
-        distinct_count = agg_row["distinct_count"] or 0
+        distinct_count = (agg_row["distinct_count"] if not is_complex else 0) or 0
 
         entry: dict = {
             "dtype": dtype_name,
@@ -87,7 +98,7 @@ def profile_dataframe(df: "DataFrame", sample_size: int = PROFILER_SAMPLE_SIZE) 
             "distinct_count": distinct_count,
         }
 
-        if distinct_count <= STAT_DISTINCT_THRESHOLD:
+        if not is_complex and distinct_count <= STAT_DISTINCT_THRESHOLD:
             distinct_vals = (
                 df.select(col_name)
                 .where(col.isNotNull())
@@ -104,15 +115,18 @@ def profile_dataframe(df: "DataFrame", sample_size: int = PROFILER_SAMPLE_SIZE) 
             entry["mean"] = round(agg_row["mean_val"] or 0.0, 4)
             entry["stddev"] = round(agg_row["stddev_val"] or 0.0, 4)
 
-        # Grab up to 5 non-null sample values
-        sample_vals = (
-            df.select(col_name)
-            .where(col.isNotNull())
-            .limit(5)
-            .rdd.flatMap(lambda r: r)
-            .collect()
-        )
-        entry["sample_values"] = [str(v) for v in sample_vals]
+        # Grab up to 5 non-null sample values (skip for complex types — rdd.flatMap fails on maps)
+        if not is_complex:
+            sample_vals = (
+                df.select(col_name)
+                .where(col.isNotNull())
+                .limit(5)
+                .rdd.flatMap(lambda r: r)
+                .collect()
+            )
+            entry["sample_values"] = [str(v) for v in sample_vals]
+        else:
+            entry["sample_values"] = []
 
         profile[col_name] = entry
         logger.debug(
