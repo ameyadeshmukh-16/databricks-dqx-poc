@@ -7,20 +7,20 @@ bundle:
 variables:
   cluster_id:
     description: "Databricks cluster ID to run jobs on"
-    default: "0503-070439-2pnm5wxs"
+    default: "0601-042329-nm42bg1s"
 
 targets:
   dev:
     mode: development
     default: true
     workspace:
-      host: https://adb-7405612409243268.8.azuredatabricks.net
+      host: https://adb-7405619883480512.12.azuredatabricks.net
 
   ## Optionally, there could be 'staging' or 'prod' targets here.
   #
   # prod:
   #   workspace:
-  #     host: https://adb-7405612409243268.8.azuredatabricks.net
+  #     host: https://adb-7405619883480512.12.azuredatabricks.net
 
 resources:
   jobs:
@@ -30,10 +30,10 @@ resources:
         - task_key: produce_events
           spark_python_task:
             python_file: ./notebooks/kafka_producer_job.py
-            base_parameters:
-              num_events: "1000"
-              batch_size: "10"
-              interval_seconds: "5"
+            parameters:
+              - "--num_events=1000"
+              - "--batch_size=10"
+              - "--interval_seconds=5"
           existing_cluster_id: ${var.cluster_id}
 
     rtm_kafka_consumer:
@@ -51,9 +51,9 @@ resources:
         - task_key: stage_data
           spark_python_task:
             python_file: ./notebooks/setup_delta_tables.py
-            base_parameters:
-              csv_path: "abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/sales_transactions.csv"
-              database: "retail_dqx_poc"
+            parameters:
+              - "--csv_path=abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/sales_transactions.csv"
+              - "--database=retail_dqx_poc"
           existing_cluster_id: ${var.cluster_id}
 
         - task_key: validate_data
@@ -61,16 +61,16 @@ resources:
             - task_key: stage_data
           spark_python_task:
             python_file: ./notebooks/batch_dqx_validation.py
-            base_parameters:
-              database: "retail_dqx_poc"
+            parameters:
+              - "--database=retail_dqx_poc"
           existing_cluster_id: ${var.cluster_id}
 
     ai_rule_suggester:
       name: "[RTM] AI Rule Suggester"
       tasks:
         - task_key: suggest_rules
-          spark_python_task:
-            python_file: ./notebooks/ai_rule_suggester.py
+          notebook_task:
+            notebook_path: ./notebooks/ai_rule_suggester.py
             base_parameters:
               source_table: "dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_staging"
               run_config_name: "sales_batch_rules"
