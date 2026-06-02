@@ -77,3 +77,17 @@ resources:
               context_description: "Retail POS sales transactions from brick-and-mortar stores"
               llm_backend: "openrouter"
           existing_cluster_id: ${var.cluster_id}
+
+    quarantine_analyzer:
+      name: "[RTM] Quarantine Analyzer"
+      tasks:
+        - task_key: analyze_quarantine
+          notebook_task:
+            notebook_path: ./notebooks/quarantine_analyzer.py
+            base_parameters:
+              quarantine_table: "dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_quarantine"
+              run_config_name: "sales_batch_rules"
+              context_description: "Retail POS sales transactions from brick-and-mortar stores"
+              llm_backend: "openrouter"
+              top_n: "20"
+          existing_cluster_id: ${var.cluster_id}
