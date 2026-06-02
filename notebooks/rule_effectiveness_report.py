@@ -139,9 +139,10 @@ display(
 
 # Identify the N most recent distinct run_ids for this config
 recent_runs_df = spark.sql(f"""
-    SELECT DISTINCT run_id
+    SELECT run_id
     FROM {TABLE_RULE_METRICS}
     WHERE {_config_filter}
+    GROUP BY run_id
     ORDER BY MAX(recorded_at) DESC
     LIMIT {lookback_runs}
 """)
