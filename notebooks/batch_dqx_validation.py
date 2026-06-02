@@ -44,6 +44,7 @@ from config.constants import (
     BATCH_RULE_CONFIG_NAME,
     DATABASE,
 )
+import uuid
 
 # -----------------------------------
 # Widgets
@@ -117,6 +118,16 @@ quarantine_count = quarantine_df.count()
 logger.info("Total rows     : %d", total_count)
 logger.info("Clean rows     : %d", clean_count)
 logger.info("Quarantine rows: %d", quarantine_count)
+
+# -----------------------------------
+# Rule Effectiveness Metrics
+# -----------------------------------
+from ai_suggester.rule_metrics import compute_rule_metrics, write_rule_metrics
+
+_run_id = str(uuid.uuid4())
+_metrics = compute_rule_metrics(quarantine_df, total_count, _run_id, "batch", BATCH_RULE_CONFIG_NAME)
+_written = write_rule_metrics(_metrics, spark)
+logger.info("Rule metrics written: %d rules tracked for run %s", _written, _run_id)
 
 # -----------------------------------
 # Persist Clean Data

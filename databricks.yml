@@ -91,3 +91,14 @@ resources:
               llm_backend: "openrouter"
               top_n: "20"
           existing_cluster_id: ${var.cluster_id}
+
+    rule_effectiveness_report:
+      name: "[RTM] Rule Effectiveness Report"
+      tasks:
+        - task_key: run_report
+          notebook_task:
+            notebook_path: ./notebooks/rule_effectiveness_report.py
+            base_parameters:
+              run_config_name: "sales_batch_rules"
+              lookback_runs: "10"
+          existing_cluster_id: ${var.cluster_id}

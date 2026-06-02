@@ -43,6 +43,7 @@ from pyspark.sql.types import (
     StringType, DoubleType, IntegerType, BooleanType,
 )
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 # -----------------------------------
@@ -61,6 +62,7 @@ logger.info("NOTEBOOK STARTED")
 # -----------------------------------
 # Constants
 # -----------------------------------
+import uuid
 from config.constants import (
     TABLE_STREAM_CLEAN,
     TABLE_STREAM_QUARANTINE,
@@ -315,7 +317,7 @@ def process(batch_df, batch_id):
         batch_id, clean_count, quarantine_count,
     )
 
-    # Write one metrics row per batch — visible in the notebook via display() below.
+    # Write one aggregate metrics row per batch (clean/quarantine totals)
     (
         batch_df.sparkSession
             .createDataFrame(
@@ -326,6 +328,15 @@ def process(batch_df, batch_id):
             .write.mode("append")
             .saveAsTable(TABLE_BATCH_METRICS)
     )
+
+    # Write per-rule violation breakdown to dq_rule_metrics
+    from ai_suggester.rule_metrics import compute_rule_metrics, write_rule_metrics
+
+    _run_id = f"stream_{batch_id}_{int(datetime.now().timestamp())}"
+    _metrics = compute_rule_metrics(
+        quarantine, clean_count + quarantine_count, _run_id, "streaming", STREAMING_RULE_CONFIG_NAME,
+    )
+    write_rule_metrics(_metrics, batch_df.sparkSession)
 
 # -----------------------------------
 # Start Stream

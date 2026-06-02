@@ -58,6 +58,7 @@ ALL_DIVISIONS     = VALID_DIVISIONS + INVALID_DIVISIONS
 # AI Rule Suggester
 # -----------------------------------
 TABLE_RULES_STAGING      = f"{CATALOG}.{DATABASE}.dq_rules_staging"
+TABLE_RULE_METRICS       = f"{CATALOG}.{DATABASE}.dq_rule_metrics"
 
 # Profiler
 PROFILER_SAMPLE_SIZE     = 10_000   # max rows sampled for profiling large tables
