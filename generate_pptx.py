@@ -22,6 +22,16 @@ CODE_BG     = RGBColor(0x1E, 0x1E, 0x2E)
 CODE_FG     = RGBColor(0xCD, 0xD6, 0xF4)
 TABLE_HDR   = DARK_BLUE
 
+# ── Extended palette for visual diagrams ─────────────────────────────────────
+BOX_BLUE    = RGBColor(0xE8, 0xF0, 0xFE)   # light blue — neutral flow boxes
+BOX_TEAL    = RGBColor(0xE4, 0xF6, 0xF1)   # light teal — AI / positive steps
+BOX_RED     = RGBColor(0xFF, 0xED, 0xED)   # light pink — today / warning
+BOX_GREEN   = RGBColor(0xE6, 0xF4, 0xEA)   # light green — clean / approved
+BOX_ORANGE  = RGBColor(0xFF, 0xF3, 0xE0)   # light amber — staging / pending
+TEAL_BORDER = RGBColor(0x0B, 0x8A, 0x6A)   # teal border for AI boxes
+GREEN_BORDER= RGBColor(0x1E, 0x7E, 0x34)   # green border for approved/clean
+ORANGE_BRD  = RGBColor(0xE6, 0x5C, 0x00)   # orange border for pending
+
 W = Inches(13.33)
 H = Inches(7.5)
 
@@ -166,6 +176,67 @@ def bullet_list(slide, items, x, y, w, h, size=18, color=DARK_GREY,
     return tb
 
 
+# ── Visual diagram helpers ────────────────────────────────────────────────────
+def fbox(slide, label, x, y, w=Inches(2.4), h=Inches(0.62),
+         bg=BOX_BLUE, border=DARK_BLUE, text_color=DARK_BLUE,
+         size=12.5, bold=False, border_width=1.2):
+    """Labelled flow/diagram box with coloured background."""
+    s = slide.shapes.add_shape(1, x, y, w, h)
+    s.fill.solid()
+    s.fill.fore_color.rgb = bg
+    s.line.color.rgb = border
+    s.line.width = Pt(border_width)
+    tf = s.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    from pptx.util import Pt as _Pt
+    from pptx.oxml.ns import qn
+    # vertical centre via margin
+    tf.margin_top = int(h / 2 - _Pt(size) * 0.75)
+    run = p.add_run()
+    run.text = label
+    run.font.size = Pt(size)
+    run.font.bold = bold
+    run.font.color.rgb = text_color
+    return s
+
+
+def arrow_r(slide, x, y, size=18, color=MED_GREY):
+    """Right-pointing arrow label."""
+    txb(slide, "→", x, y, Inches(0.45), Inches(0.5),
+        size=size, bold=True, color=color, align=PP_ALIGN.CENTER)
+
+
+def arrow_d(slide, x, y, size=18, color=MED_GREY):
+    """Down-pointing arrow label."""
+    txb(slide, "↓", x, y, Inches(0.35), Inches(0.42),
+        size=size, bold=True, color=color, align=PP_ALIGN.CENTER)
+
+
+def arrow_l(slide, x, y, size=18, color=MED_GREY):
+    """Left-pointing arrow label."""
+    txb(slide, "←", x, y, Inches(0.45), Inches(0.5),
+        size=size, bold=True, color=color, align=PP_ALIGN.CENTER)
+
+
+def badge(slide, text, x, y, bg=DARK_BLUE, color=WHITE, size=11):
+    """Small numbered badge / pill label."""
+    s = slide.shapes.add_shape(1, x, y, Inches(0.32), Inches(0.32))
+    s.fill.solid()
+    s.fill.fore_color.rgb = bg
+    s.line.fill.background()
+    tf = s.text_frame
+    tf.margin_top = Pt(1)
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.CENTER
+    run = p.add_run()
+    run.text = text
+    run.font.size = Pt(size)
+    run.font.bold = True
+    run.font.color.rgb = color
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # SLIDE 1 — Title
 # ═══════════════════════════════════════════════════════════════════════════
@@ -308,58 +379,139 @@ def s06_vision_need():
     sl = prs.slides.add_slide(BLANK)
     slide_title(sl, "What We Need")
 
-    code = (
-        "              TODAY                              TARGET\n"
-        "    ┌──────────────────────┐         ┌──────────────────────────────┐\n"
-        "    │  Data Engineer       │         │  AI analyses data profile    │\n"
-        "    │  writes rules        │  →→→→   │  suggests rules              │\n"
-        "    │  manually, reactively│         │  learns from violations      │\n"
-        "    │  no effectiveness    │         │  continuously self-improves  │\n"
-        "    │  feedback            │         │  governed by humans          │\n"
-        "    └──────────────────────┘         └──────────────────────────────┘\n"
-        "\n"
-        "       Reactive, slow, brittle          Proactive, adaptive, governed"
-    )
-    code_block(sl, code, Inches(0.6), Inches(1.65), Inches(12.1), Inches(3.35), size=11.5)
+    # ── TODAY box (left) ──────────────────────────────────────────────────
+    today_x, box_y = Inches(0.45), Inches(1.65)
+    box_w, box_h   = Inches(5.55), Inches(4.85)
+    s = sl.shapes.add_shape(1, today_x, box_y, box_w, box_h)
+    s.fill.solid(); s.fill.fore_color.rgb = BOX_RED
+    s.line.color.rgb = RED_ACCENT; s.line.width = Pt(1.8)
 
-    txb(sl, "Three shifts required:", Inches(0.7), Inches(5.15), Inches(12.0), Inches(0.4),
-        size=17, bold=True, color=DARK_BLUE)
-    items = [
-        "Batch → Real-time  —  Catch bad data as it arrives, not the next morning",
-        "Manual → AI-Generated  —  Let AI analyse the data and write the rules",
-        "Static → Self-Improving  —  Rules that evolve as data patterns change",
+    txb(sl, "TODAY", today_x, box_y + Inches(0.1), box_w, Inches(0.45),
+        size=17, bold=True, color=RED_ACCENT, align=PP_ALIGN.CENTER)
+    txb(sl, "Reactive  ·  Slow  ·  Brittle",
+        today_x, box_y + Inches(0.55), box_w, Inches(0.32),
+        size=11.5, italic=True, color=RED_ACCENT, align=PP_ALIGN.CENTER)
+    # thin rule under subtitle
+    sep = sl.shapes.add_shape(1, today_x + Inches(0.3), box_y + Inches(0.88),
+                               box_w - Inches(0.6), Pt(1))
+    sep.fill.solid(); sep.fill.fore_color.rgb = RED_ACCENT; sep.line.fill.background()
+
+    today_items = [
+        "Engineer writes every rule manually",
+        "Rules created after a problem surfaces",
+        "Stale rules pile up — never reviewed",
+        "Schema changes break rules silently",
+        "No visibility into rule effectiveness",
     ]
-    bullet_list(sl, items, Inches(0.7), Inches(5.55), Inches(12.0), Inches(1.7),
-                size=16, space=7)
+    bullet_list(sl, today_items, today_x + Inches(0.22), box_y + Inches(1.05),
+                box_w - Inches(0.3), Inches(3.5), size=14.5, space=14,
+                color=RGBColor(0x55, 0x11, 0x1A))
+
+    # ── Arrow + label (centre) ────────────────────────────────────────────
+    txb(sl, "→", Inches(6.2), Inches(3.5), Inches(0.9), Inches(0.7),
+        size=38, bold=True, color=DARK_BLUE, align=PP_ALIGN.CENTER)
+    txb(sl, "AI\nInfusion", Inches(6.1), Inches(4.22), Inches(1.1), Inches(0.7),
+        size=11, bold=True, color=DARK_BLUE, align=PP_ALIGN.CENTER)
+
+    # ── TARGET box (right) ────────────────────────────────────────────────
+    tgt_x = Inches(7.3)
+    t = sl.shapes.add_shape(1, tgt_x, box_y, box_w, box_h)
+    t.fill.solid(); t.fill.fore_color.rgb = BOX_BLUE
+    t.line.color.rgb = DARK_BLUE; t.line.width = Pt(1.8)
+
+    txb(sl, "TARGET", tgt_x, box_y + Inches(0.1), box_w, Inches(0.45),
+        size=17, bold=True, color=DARK_BLUE, align=PP_ALIGN.CENTER)
+    txb(sl, "Proactive  ·  Adaptive  ·  Governed",
+        tgt_x, box_y + Inches(0.55), box_w, Inches(0.32),
+        size=11.5, italic=True, color=DARK_BLUE, align=PP_ALIGN.CENTER)
+    sep2 = sl.shapes.add_shape(1, tgt_x + Inches(0.3), box_y + Inches(0.88),
+                                box_w - Inches(0.6), Pt(1))
+    sep2.fill.solid(); sep2.fill.fore_color.rgb = DARK_BLUE; sep2.line.fill.background()
+
+    target_items = [
+        "AI analyses data and generates rules",
+        "Rules suggested proactively from patterns",
+        "Effectiveness tracked after every run",
+        "Stale rules automatically detected",
+        "Human governance at every approval step",
+    ]
+    bullet_list(sl, target_items, tgt_x + Inches(0.22), box_y + Inches(1.05),
+                box_w - Inches(0.3), Inches(3.5), size=14.5, space=14,
+                color=RGBColor(0x0A, 0x22, 0x44))
+
+    # ── Three shifts banner ───────────────────────────────────────────────
+    banner = sl.shapes.add_shape(1, Inches(0.45), Inches(6.65), Inches(12.4), Inches(0.58))
+    banner.fill.solid(); banner.fill.fore_color.rgb = DARK_BLUE; banner.line.fill.background()
+    txb(sl, "Three shifts:   Batch → Real-time   ·   Manual → AI-Generated   ·   Static → Self-Improving",
+        Inches(0.45), Inches(6.68), Inches(12.4), Inches(0.52),
+        size=14, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# SLIDE 7 — The AI Infusion Vision
+# SLIDE 7 — The AI Infusion Vision  (visual flow diagram)
 # ═══════════════════════════════════════════════════════════════════════════
 def s07_ai_vision():
     sl = prs.slides.add_slide(BLANK)
     slide_title(sl, "The AI Infusion Vision")
 
-    code = (
-        "┌────────────────────────────────────────────────────────────────────────┐\n"
-        "│                       CONTINUOUS FEEDBACK LOOP                          │\n"
-        "│                                                                          │\n"
-        "│   Raw Data ──► DQ Validation ──► Quarantine Bad Records                 │\n"
-        "│       ▲              │                     │                            │\n"
-        "│       │              │                     ▼                            │\n"
-        "│  Rules Registry ◄── AI Rule ◄── AI Analyses Patterns in bad records    │\n"
-        "│  (promoted rules)   Suggester                                           │\n"
-        "│       │                                    │                            │\n"
-        "│       │             Rule Effectiveness ◄───┘                            │\n"
-        "│       └─────────────  Dashboard                                         │\n"
-        "│                    (which rules fire, which don't)                      │\n"
-        "└────────────────────────────────────────────────────────────────────────┘"
-    )
-    code_block(sl, code, Inches(0.6), Inches(1.65), Inches(12.1), Inches(4.1), size=11)
+    # Banner label
+    banner = sl.shapes.add_shape(1, Inches(2.5), Inches(1.65), Inches(8.3), Inches(0.42))
+    banner.fill.solid(); banner.fill.fore_color.rgb = DARK_BLUE; banner.line.fill.background()
+    txb(sl, "CONTINUOUS FEEDBACK LOOP", Inches(2.5), Inches(1.68), Inches(8.3), Inches(0.38),
+        size=12, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
 
+    BW = Inches(2.5); BH = Inches(0.62)
+
+    # ── Row 1: Raw Data → DQ Rule Engine → Clean Records ─────────────────
+    r1y = Inches(2.25)
+    fbox(sl, "Raw Data", Inches(0.5), r1y, BW, BH, BOX_BLUE, DARK_BLUE, DARK_BLUE, 12.5)
+    arrow_r(sl, Inches(3.1), r1y + Inches(0.1))
+    fbox(sl, "DQ Rule Engine", Inches(3.6), r1y, BW, BH, BOX_BLUE, DARK_BLUE, DARK_BLUE, 12.5, bold=True)
+    arrow_r(sl, Inches(6.2), r1y + Inches(0.1))
+    fbox(sl, "✓  Clean Records\n(analytics-ready)",
+         Inches(6.75), r1y, BW, BH, BOX_GREEN, GREEN_BORDER, GREEN_BORDER, 11.5)
+
+    # ── Down arrow from DQ Rule Engine ───────────────────────────────────
+    arrow_d(sl, Inches(4.52), Inches(2.92))
+
+    # ── Row 2: Quarantine → AI Analyses Patterns ─────────────────────────
+    r2y = Inches(3.43)
+    fbox(sl, "✗  Quarantine Records\n(rule violations)",
+         Inches(3.6), r2y, BW, BH, BOX_RED, RED_ACCENT, RED_ACCENT, 11.5)
+    arrow_r(sl, Inches(6.2), r2y + Inches(0.1))
+    fbox(sl, "AI Analyses Patterns", Inches(6.75), r2y, BW, BH,
+         BOX_TEAL, TEAL_BORDER, TEAL_BORDER, 12.5)
+
+    # ── Down arrow from Quarantine ────────────────────────────────────────
+    arrow_d(sl, Inches(4.52), Inches(4.1))
+
+    # ── Rule Effectiveness side branch ────────────────────────────────────
+    arrow_d(sl, Inches(7.98), Inches(4.1))
+
+    # ── Row 3: Rules Registry ← Human Review ← AI Rule Suggester ─────────
+    r3y = Inches(4.62)
+    fbox(sl, "dq_rules_registry\n(active rules)", Inches(0.5), r3y, BW, BH,
+         BOX_GREEN, GREEN_BORDER, GREEN_BORDER, 11.5)
+    arrow_l(sl, Inches(3.1), r3y + Inches(0.1))
+    fbox(sl, "Human Review\n(approve / reject)", Inches(3.6), r3y, BW, BH,
+         BOX_ORANGE, ORANGE_BRD, ORANGE_BRD, 11.5)
+    arrow_l(sl, Inches(6.2), r3y + Inches(0.1))
+    fbox(sl, "AI Rule Suggester", Inches(6.75), r3y, BW, BH,
+         BOX_TEAL, TEAL_BORDER, TEAL_BORDER, 12.5)
+
+    # Rule Effectiveness box (right side)
+    fbox(sl, "Rule Effectiveness\nDashboard", Inches(6.75), Inches(4.62) + Inches(0.82),
+         BW, BH, BOX_BLUE, DARK_BLUE, DARK_BLUE, 11.5)
+
+    # ── Return arrow: registry → raw data (shown as label) ───────────────
+    txb(sl, "↑  rules updated → better validation on next run",
+        Inches(0.5), r3y + Inches(0.68), Inches(2.5), Inches(0.55),
+        size=9.5, italic=True, color=DARK_GREY)
+
+    # ── Footer note ───────────────────────────────────────────────────────
     txb(sl, "AI is not a bolt-on — it is the feedback mechanism that makes the system self-improving.",
-        Inches(0.7), Inches(5.9), Inches(12.0), Inches(0.7),
-        size=17, bold=True, color=DARK_BLUE, italic=True)
+        Inches(0.5), Inches(7.05), Inches(12.3), Inches(0.32),
+        size=13.5, bold=True, color=DARK_BLUE, italic=True, align=PP_ALIGN.CENTER)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -530,28 +682,51 @@ def s12_phase3_overview():
     txb(sl, "Profiles a data table and uses an LLM to generate new DQ rules automatically.",
         Inches(0.6), Inches(1.6), Inches(12.0), Inches(0.4), size=15, italic=True, color=DARK_GREY)
 
-    code = (
-        "Step 1: Profile      Step 2: Prompt           Step 3: Generate\n"
-        "────────────         ──────────────           ────────────────\n"
-        "Analyse column  ──►  Build structured    ──►  LLM returns\n"
-        "stats: min, max,     prompt with profile      candidate rules\n"
-        "nulls, cardinality,  + domain context         in JSON format\n"
-        "distributions\n"
-        "                                                     │\n"
-        "Step 4: Validate     Step 5: Human Review            ▼\n"
-        "────────────────     ─────────────────        dq_rules_staging\n"
-        "Parse + validate ◄── Engineer: approve ◄───── (status=pending)\n"
-        "rule structure       or reject\n"
-        "     │\n"
-        "     ▼\n"
-        "dq_rules_registry  ← promoted and active in all future runs"
-    )
-    code_block(sl, code, Inches(0.5), Inches(2.1), Inches(12.3), Inches(4.35), size=11)
+    STEP_W, STEP_H = Inches(3.4), Inches(1.35)
 
-    txb(sl, "Two complementary rule sources:  Statistical rules (pure maths, no LLM) "
-            "+  LLM rules (domain reasoning on top)",
-        Inches(0.5), Inches(6.6), Inches(12.3), Inches(0.6),
-        size=15, bold=True, color=DARK_BLUE)
+    # ── Row 1: Steps 1 → 2 → 3 ───────────────────────────────────────────
+    r1y = Inches(2.1)
+    fbox(sl, "Profile\nAnalyse column stats\n(min, max, nulls,\ncardinality)",
+         Inches(0.4), r1y, STEP_W, STEP_H, BOX_BLUE, DARK_BLUE, DARK_BLUE, 12)
+    txb(sl, "①", Inches(0.52), r1y + Inches(0.07), Inches(0.4), Inches(0.38),
+        size=14, bold=True, color=DARK_BLUE)
+    arrow_r(sl, Inches(3.92), r1y + Inches(0.36))
+
+    fbox(sl, "Build Prompt\nConvert stats into\nstructured LLM prompt\n+ domain context",
+         Inches(4.5), r1y, STEP_W, STEP_H, BOX_BLUE, DARK_BLUE, DARK_BLUE, 12)
+    txb(sl, "②", Inches(4.62), r1y + Inches(0.07), Inches(0.4), Inches(0.38),
+        size=14, bold=True, color=DARK_BLUE)
+    arrow_r(sl, Inches(8.02), r1y + Inches(0.36))
+
+    fbox(sl, "LLM Generates\nClaude / Azure OpenAI\nreturns candidate rules\nin structured JSON",
+         Inches(8.6), r1y, STEP_W, STEP_H, BOX_TEAL, TEAL_BORDER, TEAL_BORDER, 12)
+    txb(sl, "③", Inches(8.72), r1y + Inches(0.07), Inches(0.4), Inches(0.38),
+        size=14, bold=True, color=TEAL_BORDER)
+    arrow_d(sl, Inches(10.13), Inches(3.52))
+
+    # ── Row 2: Registry ← Review ← Validate/Stage ────────────────────────
+    r2y = Inches(4.0)
+    fbox(sl, "Validate & Stage\nParse JSON, validate\nstructure, write to\ndq_rules_staging",
+         Inches(8.6), r2y, STEP_W, STEP_H, BOX_BLUE, DARK_BLUE, DARK_BLUE, 12)
+    txb(sl, "④", Inches(8.72), r2y + Inches(0.07), Inches(0.4), Inches(0.38),
+        size=14, bold=True, color=DARK_BLUE)
+    arrow_l(sl, Inches(8.02), r2y + Inches(0.36))
+
+    fbox(sl, "Human Review\nEngineer approves\nor rejects each rule",
+         Inches(4.5), r2y, STEP_W, STEP_H, BOX_ORANGE, ORANGE_BRD, ORANGE_BRD, 12)
+    txb(sl, "⑤", Inches(4.62), r2y + Inches(0.07), Inches(0.4), Inches(0.38),
+        size=14, bold=True, color=ORANGE_BRD)
+    arrow_l(sl, Inches(3.92), r2y + Inches(0.36))
+
+    fbox(sl, "dq_rules_registry\nPromoted & active\nin all future batch\n+ streaming runs",
+         Inches(0.4), r2y, STEP_W, STEP_H, BOX_GREEN, GREEN_BORDER, GREEN_BORDER, 12)
+
+    # ── Two-source footer ─────────────────────────────────────────────────
+    banner = sl.shapes.add_shape(1, Inches(0.4), Inches(5.55), Inches(12.5), Inches(0.46))
+    banner.fill.solid(); banner.fill.fore_color.rgb = LIGHT_GREY; banner.line.fill.background()
+    txb(sl, "Two complementary sources:   Statistical rules (no LLM, pure maths)   +   LLM rules (domain reasoning)",
+        Inches(0.4), Inches(5.58), Inches(12.5), Inches(0.4),
+        size=13, color=DARK_BLUE, align=PP_ALIGN.CENTER)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -798,30 +973,48 @@ def s19_hitl():
         Inches(0.6), Inches(1.6), Inches(12.0), Inches(0.38),
         size=18, bold=True, color=DARK_BLUE)
 
-    code = (
-        "                  ┌──────────────────┐\n"
-        "  AI Suggests ──► │  dq_rules_       │ ──► Engineer reviews\n"
-        "  (statistical    │  staging         │     approve / reject\n"
-        "   + LLM rules)   │  status=pending  │          │\n"
-        "                  └──────────────────┘          │\n"
-        "                                                ▼\n"
-        "                                       ┌──────────────────┐\n"
-        "                                       │  dq_rules_       │\n"
-        "                                       │  registry        │  ← single source of truth\n"
-        "                                       │  status=approved │    for batch + streaming\n"
-        "                                       └──────────────────┘"
-    )
-    code_block(sl, code, Inches(0.5), Inches(2.1), Inches(12.3), Inches(3.3), size=11.5)
+    BW, BH = Inches(2.8), Inches(0.72)
 
-    txb(sl, "Why this matters architecturally:", Inches(0.6), Inches(5.55), Inches(12.0), Inches(0.38),
-        size=15, bold=True, color=DARK_BLUE)
+    # ── Row 1: AI Suggests → Staging Table ───────────────────────────────
+    r1y = Inches(2.15)
+    fbox(sl, "AI Suggests\n(statistical + LLM rules)",
+         Inches(0.5), r1y, BW, BH, BOX_TEAL, TEAL_BORDER, TEAL_BORDER, 12.5)
+    arrow_r(sl, Inches(3.42), r1y + Inches(0.15))
+    fbox(sl, "dq_rules_staging\nstatus = pending",
+         Inches(4.0), r1y, BW, BH, BOX_ORANGE, ORANGE_BRD, ORANGE_BRD, 12.5)
+    arrow_r(sl, Inches(6.92), r1y + Inches(0.15))
+    fbox(sl, "Engineer Reviews\napprove  /  reject",
+         Inches(7.5), r1y, BW, BH, BOX_BLUE, DARK_BLUE, DARK_BLUE, 12.5, bold=True)
+
+    # ── Down arrows from Review ───────────────────────────────────────────
+    txb(sl, "↙", Inches(7.7), Inches(2.95), Inches(0.5), Inches(0.5),
+        size=24, bold=True, color=GREEN_BORDER, align=PP_ALIGN.CENTER)
+    txb(sl, "↘", Inches(9.8), Inches(2.95), Inches(0.5), Inches(0.5),
+        size=24, bold=True, color=RED_ACCENT, align=PP_ALIGN.CENTER)
+
+    # ── Row 2: Approved (left) | Rejected (right) ─────────────────────────
+    r2y = Inches(3.52)
+    fbox(sl, "APPROVED\ndq_rules_registry",
+         Inches(6.5), r2y, Inches(2.4), BH, BOX_GREEN, GREEN_BORDER, GREEN_BORDER, 12.5, bold=True)
+    fbox(sl, "REJECTED\nPreserved for\nfine-tuning",
+         Inches(9.5), r2y, Inches(2.4), BH, BOX_RED, RED_ACCENT, RED_ACCENT, 12.5)
+
+    # ── Down arrow from Approved → active in pipelines ────────────────────
+    arrow_d(sl, Inches(7.52), Inches(4.3))
+    fbox(sl, "Active in all future batch + streaming runs",
+         Inches(5.7), Inches(4.82), Inches(4.5), Inches(0.58),
+         BOX_BLUE, DARK_BLUE, DARK_BLUE, 12.5, bold=True)
+
+    # ── Key points ────────────────────────────────────────────────────────
+    txb(sl, "Why this matters architecturally:", Inches(0.5), Inches(2.9), Inches(4.8), Inches(0.38),
+        size=14, bold=True, color=DARK_BLUE)
     items = [
-        "Full audit trail: rule_id · suggested_at · reviewed_at · reviewed_by · llm_backend",
-        "Rejected rules preserved with reason — future fine-tuning data",
-        "Promotion pattern is identical to a feature-flag promotion workflow",
-        "Zero risk of a hallucinated rule silently entering production",
+        "Full audit trail: rule_id · suggested_at · reviewed_by · llm_backend",
+        "Rejected rules preserved — future fine-tuning data",
+        "Identical pattern to feature-flag promotion workflow",
+        "Zero risk of hallucinated rule entering production",
     ]
-    bullet_list(sl, items, Inches(0.7), Inches(5.95), Inches(12.0), Inches(1.35), size=15, space=6)
+    bullet_list(sl, items, Inches(0.5), Inches(3.35), Inches(4.8), Inches(2.0), size=13.5, space=10)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -831,35 +1024,71 @@ def s20_architecture():
     sl = prs.slides.add_slide(BLANK)
     slide_title(sl, "Full System Architecture")
 
-    code = (
-        "┌─────────────────────────────────────────────────────────────────────────┐\n"
-        "│                  DATABRICKS UNITY CATALOG                                │\n"
-        "│    Catalog: dqx_poc_cluster_7405619883480512  /  DB: retail_dqx_poc     │\n"
-        "│                                                                           │\n"
-        "│  ┌──────────────┐  ┌──────────────────────────────────────────────┐     │\n"
-        "│  │ Config Layer │  │             PROCESSING LAYER                  │     │\n"
-        "│  │ constants.py │─►│  Batch Pipeline        Streaming Pipeline     │     │\n"
-        "│  │ rules_*.yml  │  │  batch_dqx_            kafka_stream_dqx_     │     │\n"
-        "│  └──────────────┘  │  validation.py         validation.py         │     │\n"
-        "│                    │         └──────────┬───────────────┘          │     │\n"
-        "│  ┌──────────────┐  │                   ▼                           │     │\n"
-        "│  │   AI Layer   │  │         DQX Rule Engine                       │     │\n"
-        "│  │  profiler    │─►│    apply_checks_by_metadata()                 │     │\n"
-        "│  │  llm_backend │  │                   │                           │     │\n"
-        "│  │  rule_writer │  │       ┌───────────┴───────────┐              │     │\n"
-        "│  └──────────────┘  │  sales_clean /         sales_quarantine /    │     │\n"
-        "│                    │  stream_events_clean   stream_events_quarant  │     │\n"
-        "│  ┌──────────────┐  │                   │                           │     │\n"
-        "│  │Metrics Layer │◄─│            dq_rule_metrics                    │     │\n"
-        "│  │ rule_metrics │  │            dq_rules_staging                   │     │\n"
-        "│  └──────────────┘  │            dq_rules_registry                  │     │\n"
-        "│                    └──────────────────────────────────────────────┘     │\n"
-        "└─────────────────────────────────────────────────────────────────────────┘\n"
-        "        ▲                                                   ▲\n"
-        "  Azure Event Hubs (Kafka)                          LLM APIs\n"
-        "                                               (Claude / Azure OpenAI)"
-    )
-    code_block(sl, code, Inches(0.4), Inches(1.65), Inches(12.5), Inches(5.7), size=9.5)
+    # ── Outer Unity Catalog container ─────────────────────────────────────
+    outer = sl.shapes.add_shape(1, Inches(0.35), Inches(1.65), Inches(12.6), Inches(5.6))
+    outer.fill.solid(); outer.fill.fore_color.rgb = RGBColor(0xF0, 0xF4, 0xFA)
+    outer.line.color.rgb = DARK_BLUE; outer.line.width = Pt(1.5)
+    txb(sl, "DATABRICKS UNITY CATALOG  —  dqx_poc_cluster_7405619883480512 / retail_dqx_poc",
+        Inches(0.45), Inches(1.68), Inches(12.4), Inches(0.32),
+        size=9.5, bold=True, color=DARK_BLUE, align=PP_ALIGN.CENTER)
+
+    # ── External: Azure Event Hubs (top-left) & LLM APIs (top-right) ─────
+    fbox(sl, "Azure Event Hubs\n(Kafka protocol)",
+         Inches(0.5), Inches(2.08), Inches(2.2), Inches(0.6),
+         RGBColor(0xFF,0xF3,0xE0), ORANGE_BRD, ORANGE_BRD, 10.5)
+    fbox(sl, "LLM APIs\nClaude / Azure OpenAI",
+         Inches(10.5), Inches(2.08), Inches(2.2), Inches(0.6),
+         RGBColor(0xFF,0xF3,0xE0), ORANGE_BRD, ORANGE_BRD, 10.5)
+
+    # Down arrows from external into processing row
+    arrow_d(sl, Inches(1.44), Inches(2.72))
+    arrow_d(sl, Inches(11.44), Inches(2.72))
+
+    # ── Row 1: Config | Batch | Streaming | AI Layer ──────────────────────
+    r1y = Inches(3.22)
+    fbox(sl, "Config Layer\nconstants.py\nrules_*.yml",
+         Inches(0.5), r1y, Inches(1.95), Inches(0.9),
+         BOX_BLUE, DARK_BLUE, DARK_BLUE, 10)
+    arrow_r(sl, Inches(2.55), r1y + Inches(0.2))
+    fbox(sl, "Batch Pipeline\nbatch_dqx_\nvalidation.py",
+         Inches(3.1), r1y, Inches(2.3), Inches(0.9),
+         BOX_BLUE, DARK_BLUE, DARK_BLUE, 10)
+    fbox(sl, "Streaming Pipeline\nkafka_stream_dqx_\nvalidation.py",
+         Inches(5.6), r1y, Inches(2.5), Inches(0.9),
+         BOX_BLUE, DARK_BLUE, DARK_BLUE, 10)
+    fbox(sl, "AI Layer\nprofiler\nllm_backend\nrule_writer",
+         Inches(10.4), r1y, Inches(2.1), Inches(0.9),
+         BOX_TEAL, TEAL_BORDER, TEAL_BORDER, 10)
+    arrow_l(sl, Inches(8.75), r1y + Inches(0.2))
+
+    # Down arrows into DQX engine
+    arrow_d(sl, Inches(4.12), Inches(4.18))
+    arrow_d(sl, Inches(6.72), Inches(4.18))
+
+    # ── Row 2: DQX Rule Engine (centred) ─────────────────────────────────
+    r2y = Inches(4.68)
+    fbox(sl, "DQX Rule Engine  —  apply_checks_by_metadata()",
+         Inches(2.8), r2y, Inches(5.2), Inches(0.58),
+         RGBColor(0xE0,0xE8,0xFF), DARK_BLUE, DARK_BLUE, 12, bold=True)
+
+    # Down arrows into output tables
+    arrow_d(sl, Inches(4.12), Inches(5.32))
+    arrow_d(sl, Inches(6.72), Inches(5.32))
+
+    # ── Row 3: Clean tables | Quarantine tables ───────────────────────────
+    r3y = Inches(5.82)
+    fbox(sl, "sales_clean\nstream_events_clean",
+         Inches(2.8), r3y, Inches(2.3), Inches(0.7),
+         BOX_GREEN, GREEN_BORDER, GREEN_BORDER, 10)
+    fbox(sl, "sales_quarantine\nstream_events_quarantine",
+         Inches(5.6), r3y, Inches(2.4), Inches(0.7),
+         BOX_RED, RED_ACCENT, RED_ACCENT, 10)
+
+    # Arrow from quarantine → metrics
+    arrow_r(sl, Inches(8.1), r3y + Inches(0.16))
+    fbox(sl, "dq_rule_metrics\ndq_rules_staging\ndq_rules_registry",
+         Inches(8.65), r3y, Inches(2.3), Inches(0.7),
+         BOX_ORANGE, ORANGE_BRD, DARK_BLUE, 10)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1106,24 +1335,57 @@ def s28_vision_realised():
     sl = prs.slides.add_slide(BLANK)
     slide_title(sl, "The Vision, Realised")
 
-    code = (
-        "┌──────────────────────────────────────────────────────────────────────┐\n"
-        "│                                                                        │\n"
-        "│   TODAY (POC — 5 phases complete)  TOMORROW (Production AI Infusion)  │\n"
-        "│   ─────────────────────────────    ───────────────────────────────    │\n"
-        "│                                                                        │\n"
-        "│   ✅ AI generates DQ rules          + AI detects when rules go stale  │\n"
-        "│   ✅ Batch + stream validated        + AI classifies alert severity    │\n"
-        "│   ✅ Quarantine records analysed     + AI explains root cause in eng   │\n"
-        "│   ✅ Rule effectiveness tracked      + AI suggests rule updates        │\n"
-        "│   ✅ Human governance layer          + AI scorecard for exec view      │\n"
-        "│                                                                        │\n"
-        "│   Result: A data quality platform that improves itself,                │\n"
-        "│   governed by humans, powered by AI, built on Databricks.             │\n"
-        "│                                                                        │\n"
-        "└──────────────────────────────────────────────────────────────────────┘"
-    )
-    code_block(sl, code, Inches(0.5), Inches(1.65), Inches(12.3), Inches(4.7), size=11.5)
+    # ── TODAY column (left) ───────────────────────────────────────────────
+    col_y = Inches(1.65); col_h = Inches(5.0); col_w = Inches(5.7)
+    today = sl.shapes.add_shape(1, Inches(0.4), col_y, col_w, col_h)
+    today.fill.solid(); today.fill.fore_color.rgb = BOX_GREEN
+    today.line.color.rgb = GREEN_BORDER; today.line.width = Pt(1.5)
+
+    txb(sl, "TODAY — Complete", Inches(0.5), col_y + Inches(0.12), col_w - Inches(0.1), Inches(0.42),
+        size=16, bold=True, color=GREEN_BORDER, align=PP_ALIGN.CENTER)
+    sep = sl.shapes.add_shape(1, Inches(0.6), col_y + Inches(0.55), col_w - Inches(0.4), Pt(1))
+    sep.fill.solid(); sep.fill.fore_color.rgb = GREEN_BORDER; sep.line.fill.background()
+
+    today_items = [
+        "✅  AI generates DQ rules from data",
+        "✅  Batch + stream data validated",
+        "✅  Quarantine records analysed",
+        "✅  Rule effectiveness tracked",
+        "✅  Human governance layer",
+    ]
+    bullet_list(sl, today_items, Inches(0.55), col_y + Inches(0.7), col_w - Inches(0.2),
+                Inches(4.0), size=15, space=16, color=RGBColor(0x0D, 0x52, 0x2A), bullet_char="")
+
+    # ── TOMORROW column (right) ───────────────────────────────────────────
+    tom = sl.shapes.add_shape(1, Inches(7.2), col_y, col_w, col_h)
+    tom.fill.solid(); tom.fill.fore_color.rgb = BOX_BLUE
+    tom.line.color.rgb = DARK_BLUE; tom.line.width = Pt(1.5)
+
+    txb(sl, "TOMORROW — Production AI Infusion", Inches(7.3), col_y + Inches(0.12),
+        col_w - Inches(0.1), Inches(0.42), size=16, bold=True, color=DARK_BLUE, align=PP_ALIGN.CENTER)
+    sep2 = sl.shapes.add_shape(1, Inches(7.4), col_y + Inches(0.55), col_w - Inches(0.4), Pt(1))
+    sep2.fill.solid(); sep2.fill.fore_color.rgb = DARK_BLUE; sep2.line.fill.background()
+
+    tomorrow_items = [
+        "+  AI detects when rules go stale",
+        "+  AI classifies alert severity",
+        "+  AI explains root cause in plain English",
+        "+  AI suggests rule updates on drift",
+        "+  AI scorecard for executive reporting",
+    ]
+    bullet_list(sl, tomorrow_items, Inches(7.35), col_y + Inches(0.7), col_w - Inches(0.2),
+                Inches(4.0), size=15, space=16, color=RGBColor(0x0A, 0x22, 0x44), bullet_char="")
+
+    # ── Arrow between columns ─────────────────────────────────────────────
+    txb(sl, "→", Inches(6.2), col_y + Inches(2.0), Inches(0.8), Inches(0.7),
+        size=36, bold=True, color=DARK_BLUE, align=PP_ALIGN.CENTER)
+
+    # ── Result banner ─────────────────────────────────────────────────────
+    banner = sl.shapes.add_shape(1, Inches(0.4), Inches(6.82), Inches(12.5), Inches(0.5))
+    banner.fill.solid(); banner.fill.fore_color.rgb = DARK_BLUE; banner.line.fill.background()
+    txb(sl, "Result:  A data quality platform that improves itself — governed by humans, powered by AI, built on Databricks.",
+        Inches(0.4), Inches(6.85), Inches(12.5), Inches(0.44),
+        size=13.5, bold=True, color=WHITE, align=PP_ALIGN.CENTER)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
