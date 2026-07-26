@@ -12,6 +12,7 @@ azure-storage-file-datalake>=12.14.0
 # Utilities
 python-dotenv>=1.0.0
 pyyaml>=6.0.0
+requests>=2.31.0
 
 # AI Rule Suggester — LLM backends (install only the one(s) you use)
 anthropic>=0.25.0

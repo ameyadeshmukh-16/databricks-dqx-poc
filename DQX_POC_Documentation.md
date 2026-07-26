@@ -456,10 +456,27 @@ Raw Data (CSV / Event Hubs)
 
 ## 10. What's Next — Roadmap
 
-| Stage | What It Adds | Business Value |
-|---|---|---|
-| **A — Alerting** | Notify via Slack / Teams / email when a rule's quarantine rate spikes above threshold | Operational — catch data incidents before they reach downstream consumers |
-| **B — Drift Detection** | Scheduled re-profiling detects when data distributions shift; auto-triggers AI Rule Suggester for affected columns | Strategic — rules stay current as data evolves, no manual monitoring needed |
-| **C — DQ Scorecard** | Single 0–100 health score per table, trending over time, visible to leadership | Reporting — one number summarises data health for executive dashboards |
-| **D — Rule Governance** | Rule versioning, audit trail (who approved what and when), soft-delete, expiry dates | Compliance — production-grade change management for governed environments |
-| **E — Multi-table Expansion** | Apply the full framework to additional source tables / domains | Scale — proves the framework generalises beyond the initial retail POS dataset |
+| Stage | What It Adds | Business Value | Status |
+|---|---|---|---|
+| **A — Alerting** | Notify via Slack when a rule's `violation_pct` spikes above its own historical baseline | Operational — catch data incidents before they reach downstream consumers | ✅ Done |
+| **B — Drift Detection** | Scheduled re-profiling detects when data distributions shift; auto-triggers AI Rule Suggester for affected columns | Strategic — rules stay current as data evolves, no manual monitoring needed | Not started |
+| **C — DQ Scorecard** | Single 0–100 health score per table, trending over time, visible to leadership | Reporting — one number summarises data health for executive dashboards | Not started |
+| **D — Rule Governance** | Rule versioning, audit trail (who approved what and when), soft-delete, expiry dates | Compliance — production-grade change management for governed environments | Not started |
+| **E — Multi-table Expansion** | Apply the full framework to additional source tables / domains | Scale — proves the framework generalises beyond the initial retail POS dataset | Not started |
+
+### Stage A — Alerting: Implementation Notes
+
+Two complementary delivery paths were built:
+
+**1. In-repo scheduled job (primary path)**
+- `ai_suggester/alerting.py` — `detect_spikes()` compares each rule's most recent `violation_pct` (from `dq_rule_metrics`) against the average of its prior `ALERT_LOOKBACK_RUNS` runs. A rule "spikes" when `last_run_pct > max(baseline_pct * ALERT_SPIKE_MULTIPLIER, ALERT_MIN_ABSOLUTE_PCT)` (constants in `config/constants.py`). Spikes are posted to Slack via Incoming Webhook and logged to `dq_alert_log` (audit trail + dedupe so the same run never re-alerts).
+- `notebooks/dq_alert_check.py` reads the webhook URL from a Databricks secret scope (never a plaintext parameter) and runs the check.
+- Wired into `databricks.yml` as the `dq_alert_check` job on a 15-minute cron schedule — the **first scheduled job** in the bundle; every other job today is manually triggered.
+
+**2. Native Databricks SQL Alert (alternative path)**
+For teams that prefer zero-code, UI-configured alerting:
+1. Create a Databricks SQL query against `dq_rule_metrics` using the same baseline-vs-last-run logic as `detect_spikes()` (see the CTE in `ai_suggester/alerting.py`).
+2. Create a SQL Alert on that query with a "row count > 0" trigger condition.
+3. Attach a notification destination (Slack, Teams, email, PagerDuty, webhook) via the Databricks UI under **Workspace Settings → Notification Destinations**.
+
+This path requires no deployment but lives outside version control — the in-repo job remains the source of truth for the alerting logic itself.

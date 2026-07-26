@@ -42,6 +42,9 @@ class Settings:
     openrouter_model:   str = ""   # empty → backend defaults to "openrouter/auto"
     openai_base_url:    str = ""   # empty → backend defaults to "https://openrouter.ai/api/v1"
 
+    # Alerting — Slack Incoming Webhook (optional)
+    slack_webhook_url: str = ""
+
     @classmethod
     def from_env(cls) -> "Settings":
         """Load settings from environment. Raises EnvironmentError if any required var is missing."""
@@ -77,4 +80,5 @@ class Settings:
             openrouter_api_key      = os.environ.get("OPENROUTER_API_KEY", ""),
             openrouter_model        = os.environ.get("OPENROUTER_MODEL", ""),
             openai_base_url         = os.environ.get("OPENAI_BASE_URL", ""),
+            slack_webhook_url       = os.environ.get("SLACK_WEBHOOK_URL", ""),
         )

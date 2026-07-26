@@ -102,3 +102,18 @@ resources:
               run_config_name: "sales_batch_rules"
               lookback_runs: "10"
           existing_cluster_id: ${var.cluster_id}
+
+    dq_alert_check:
+      name: "[RTM] DQ Alert Check"
+      tasks:
+        - task_key: check_alerts
+          notebook_task:
+            notebook_path: ./notebooks/dq_alert_check.py
+            base_parameters:
+              run_config_name: "sales_batch_rules"
+              lookback_runs: "10"
+              secret_scope: "dqx-poc"
+          existing_cluster_id: ${var.cluster_id}
+      schedule:
+        quartz_cron_expression: "0 */15 * * * ?"
+        timezone_id: "UTC"

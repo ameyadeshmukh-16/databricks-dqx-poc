@@ -67,3 +67,13 @@ PROFILER_SAMPLE_SIZE     = 10_000   # max rows sampled for profiling large table
 STAT_NULL_THRESHOLD      = 0.01    # null_pct < 1%  → suggest is_not_null
 STAT_DISTINCT_THRESHOLD  = 50      # ≤ 50 distinct values → consider is_in_list
 STAT_COVERAGE_THRESHOLD  = 0.95    # non-null coverage ≥ 95% → use observed values as allowlist
+
+# -----------------------------------
+# Alerting
+# -----------------------------------
+TABLE_ALERT_LOG          = f"{CATALOG}.{DATABASE}.dq_alert_log"
+
+ALERT_LOOKBACK_RUNS      = 10      # runs used to compute a rule's baseline violation_pct
+ALERT_SPIKE_MULTIPLIER   = 2.5     # last run must exceed baseline_pct * this to be a spike
+ALERT_MIN_ABSOLUTE_PCT   = 5.0     # floor so a near-zero baseline doesn't trivially "spike"
+ALERT_MIN_BASELINE_RUNS  = 3       # don't alert until a rule has at least this many prior runs
