@@ -29,6 +29,8 @@ STREAMING_TRIGGER_INTERVAL   = "30 seconds"
 STREAMING_RULE_CONFIG_NAME   = "streaming_event_rules"
 BATCH_RULE_CONFIG_NAME       = "sales_batch_rules"
 
+TABLE_STREAM_READY           = f"{CATALOG}.{DATABASE}.stream_consumer_ready"
+
 # -----------------------------------
 # ADLS Gen2
 # -----------------------------------

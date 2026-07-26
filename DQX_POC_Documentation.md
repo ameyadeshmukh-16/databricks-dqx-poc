@@ -276,39 +276,75 @@ Four panels, all driven from `dq_rule_metrics`, filterable by rule group:
 
 ---
 
-### Phase 1 — Batch Validation
+### Phase 1 — Batch Pipeline (one job, six chained tasks)
 
-**Goal:** Load sales data, validate it, see clean vs quarantine split.
+**Goal:** Load sales data, validate it, auto-generate rule suggestions, report, and alert — end to end from a single trigger.
+
+As of the job-orchestration pass, `[RTM] Batch DQX Pipeline` runs everything that used to be five separate manually-triggered jobs, as one DAG:
 
 ```
-Step 1 ──► Run: [RTM] Batch DQX Validation
-           (Two tasks run sequentially: Load CSV → Validate)
+stage_data ──► validate_data ──► suggest_rules ──────► run_report ──► check_alerts
+                                └► analyze_quarantine ─┘
+```
+
+```
+Step 1 ──► Run: [RTM] Batch DQX Pipeline   (single job trigger)
+
+           stage_data          Load CSV into sales_staging
+           validate_data       Apply DQX rules → sales_clean / sales_quarantine
+                                + write dq_rule_metrics
+           suggest_rules       AI Rule Suggester profiles sales_staging,
+                                writes suggestions to dq_rules_staging
+           analyze_quarantine  Mines this run's sales_quarantine for patterns,
+                                writes suggestions to dq_rules_staging
+           run_report          Rule Effectiveness Report — reads dq_rule_metrics
+           check_alerts        Compares this run's violation_pct to baseline,
+                                notifies Slack on a spike, logs to dq_alert_log
 
            Expected output:
            · sales_staging populated (e.g. 10,000 rows)
            · sales_clean: ~85% of rows
            · sales_quarantine: ~15% of rows (bad data injected intentionally)
            · dq_rule_metrics: 6 rows (one per rule that fired)
+           · dq_rules_staging: new AI + quarantine-derived suggestions, status='pending'
+           · dq_alert_log: any spikes detected this run
 
 Step 2 ──► Query sales_quarantine to see which rules fired and why
            (Each quarantine record has an _errors column listing the rule name
             and the reason it failed)
+
+Step 3 ──► Review pending rules in dq_rules_staging:
+           SELECT * FROM dq_rules_staging WHERE status = 'pending'
+
+           For each rule, decide:
+           · Approve → call promote_rule() → rule goes live in dq_rules_registry
+           · Reject  → call reject_rule()  → rule stays in staging, never enforced
+
+Step 4 ──► Re-run [RTM] Batch DQX Pipeline to confirm any promoted rule fires
 ```
+
+Any individual task (`stage_data`, `suggest_rules`, `run_report`, etc.) can still be re-run on its own from the Databricks Jobs UI ("Repair run" / "Run task") without re-running the whole pipeline — the DAG only changes the default, not what's possible ad hoc.
+
+**Note:** this pipeline is manually triggered by design — the POC runs against a static sample CSV with no live-data cadence, so no schedule is attached. Wire a `schedule:` block on `rtm_batch_pipeline` in `databricks.yml` once there's an actual recurring data drop to trigger it.
 
 ---
 
-### Phase 2 — Streaming Validation
+### Phase 2 — Streaming Pipeline (one job, two concurrent tasks)
 
-**Goal:** Simulate live POS traffic, validate events in real time.
+**Goal:** Simulate live POS traffic, validate events in real time — one trigger starts both producer and consumer.
+
+`[RTM] Kafka Streaming Pipeline` combines the old `rtm_kafka_producer` and `rtm_kafka_consumer` jobs into one job with two tasks that start concurrently. The consumer can't be expressed as a `depends_on` predecessor (it runs forever, so it never reaches the terminal state `depends_on` waits for) — instead, the consumer writes a readiness marker to `stream_consumer_ready` right after the stream starts listening, and the producer polls that table (up to 2 minutes) before it starts sending events.
 
 ```
-Step 1 ──► Run: [RTM] Kafka Stream DQX Validation   (start consumer first)
-           Wait for log: "✅ Kafka stream started"
+Step 1 ──► Run: [RTM] Kafka Streaming Pipeline   (single job trigger)
 
-Step 2 ──► Run: [RTM] Kafka Producer Job             (generates 1,000 events)
-           Sends 10 events every 5 seconds with intentional bad data mixed in
+           stream_and_validate   Starts the Spark stream, writes a readiness
+                                  marker to stream_consumer_ready, then blocks
+                                  on awaitTermination() — runs indefinitely
+           produce_events         Polls stream_consumer_ready (up to 120s),
+                                  then sends 1,000 events (10 every 5 seconds)
 
-Step 3 ──► Watch micro-batch logs every 30 seconds:
+Step 2 ──► Watch micro-batch logs every 30 seconds:
            "Batch 0: 42 clean | 8 quarantined"
            "Batch 1: 47 clean | 13 quarantined"
 
@@ -317,74 +353,27 @@ Step 3 ──► Watch micro-batch logs every 30 seconds:
            · stream_events_quarantine: ~15% of events
            · stream_batch_metrics: one row per micro-batch
            · dq_rule_metrics: per-rule breakdown per batch
+           · [RTM] DQ Alert Check (Streaming) fires every 15 minutes against
+             this data (streaming has no "run completed" moment to hang an
+             inline alert check off of, so it stays on a schedule)
 
-Step 4 ──► Stop consumer when done:
-           Workflows → [RTM] Kafka Stream DQX Validation → Cancel Run
+Step 3 ──► Stop the job when done:
+           Workflows → [RTM] Kafka Streaming Pipeline → Cancel Run
+           (produce_events finishes on its own once it hits num_events;
+            stream_and_validate keeps running until cancelled)
 ```
 
 ---
 
-### Phase 3 — AI Rule Suggester
+### Phase 3 — Rule Effectiveness & Alerting
 
-**Goal:** Automatically discover and suggest new data quality rules.
+**Goal:** Understand which rules are working, and get notified when one spikes.
 
-```
-Step 1 ──► Run: [RTM] AI Rule Suggester
-           (Default: runs against sales_staging, uses OpenRouter LLM)
-
-           What it does internally:
-           · Profiles every column (nulls, distinct values, min/max, samples)
-           · Statistical engine generates 6–10 rules automatically
-           · LLM reads the profile and suggests 3–5 business-logic rules
-
-           Expected output (job logs):
-           "Statistical rules generated: 8"
-           "LLM rules generated: 4"
-           "Wrote 12 rules to dq_rules_staging"
-
-Step 2 ──► Review pending rules in dq_rules_staging:
-           SELECT * FROM dq_rules_staging WHERE status = 'pending'
-
-Step 3 ──► For each rule, decide:
-           · Approve → call promote_rule() → rule goes live in dq_rules_registry
-           · Reject  → call reject_rule()  → rule stays in staging, never enforced
-
-Step 4 ──► Re-run [RTM] Batch DQX Validation to confirm promoted rule fires
-```
-
----
-
-### Phase 4 — Quarantine Analyzer
-
-**Goal:** Learn from accumulated failures and suggest gap-closing rules.
+`run_report` and `check_alerts` now run automatically at the end of every `[RTM] Batch DQX Pipeline` run (Phase 1, Step 1) and on a 15-minute schedule for streaming (`[RTM] DQ Alert Check (Streaming)`). To review results:
 
 ```
-Step 1 ──► Run: [RTM] Quarantine Analyzer
-           (Analyses sales_quarantine by default)
-
-           What it does internally:
-           · Counts how often each rule fired across all quarantine records
-           · Samples the bad data values for each rule
-           · Sends this violation summary to LLM:
-             "Rule X fired 847 times. Sample bad values: [...]
-              Suggest new rules to catch additional patterns"
-
-           Expected output:
-           "Total quarantined records: 1,524"
-           "Top violation: quantity_positive — 612 times (40.1%)"
-           "LLM rules generated: 3"
-
-Step 2 ──► Same review → approve/reject workflow as Phase 3
-```
-
----
-
-### Phase 5 — Rule Effectiveness Dashboard
-
-**Goal:** Understand which rules are working, which are over/under-performing.
-
-```
-Step 1 ──► Open the "DQX Rule Effectiveness" Lakeview Dashboard
+Step 1 ──► Open the "DQX Rule Effectiveness" Lakeview Dashboard, or query
+           dq_rule_metrics directly
 
 Step 2 ──► Set filter: run_config = sales_batch_rules (or streaming_event_rules)
 
@@ -399,6 +388,9 @@ Step 4 ──► Use zero-fire list to decide:
            · Is the rule too permissive? Tighten it.
            · Has the data quality genuinely improved? Keep it but monitor.
            · Is the rule irrelevant? Reject/retire it.
+
+Step 5 ──► Check dq_alert_log for any spikes and confirm the Slack notification
+           landed in the configured channel.
 ```
 
 ---
@@ -409,24 +401,28 @@ Step 4 ──► Use zero-fire list to decide:
 Raw Data (CSV / Event Hubs)
         │
         ▼
-┌───────────────────┐
-│  Pipeline runs    │  Batch or Streaming
-│  (Phase 1 or 2)   │
-└────────┬──────────┘
+┌────────────────────────┐
+│  Pipeline runs         │  [RTM] Batch DQX Pipeline (Phase 1)
+│  stage_data ──►        │  or [RTM] Kafka Streaming Pipeline (Phase 2)
+│  validate_data         │  — one trigger, fully chained
+└────────┬───────────────┘
          │
          ├──► ✅ Clean records ──────────────────────────► Downstream use
          │
          └──► ❌ Quarantine records
                     │
-                    ├──► dq_rule_metrics (Phase 5 Dashboard reads this)
+                    ├──► dq_rule_metrics ──► run_report (Phase 3 Dashboard)
+                    │                              │
+                    │                              ▼
+                    │                        check_alerts ──► Slack (on spike)
                     │
-                    └──► Quarantine Analyzer (Phase 4)
+                    └──► analyze_quarantine (auto-chained after validate_data)
                                 │
                                 └──► New rule suggestions
                                             │
                           ┌─────────────────┘
-                          │  Also: AI Rule Suggester (Phase 3)
-                          │  profiles source data → more suggestions
+                          │  Also: suggest_rules (auto-chained after
+                          │  validate_data) profiles source data
                           ▼
                    dq_rules_staging
                    (pending review)
@@ -437,6 +433,8 @@ Raw Data (CSV / Event Hubs)
                    dq_rules_registry
                    (live on next run)
 ```
+
+Everything below `validate_data` in the batch path — `suggest_rules`, `analyze_quarantine`, `run_report`, `check_alerts` — now runs automatically as part of the same job (see Phase 1). Nothing auto-promotes to `dq_rules_registry`; a human still reviews and approves every suggestion.
 
 ---
 
@@ -468,10 +466,10 @@ Raw Data (CSV / Event Hubs)
 
 Two complementary delivery paths were built:
 
-**1. In-repo scheduled job (primary path)**
+**1. In-repo job (primary path)**
 - `ai_suggester/alerting.py` — `detect_spikes()` compares each rule's most recent `violation_pct` (from `dq_rule_metrics`) against the average of its prior `ALERT_LOOKBACK_RUNS` runs. A rule "spikes" when `last_run_pct > max(baseline_pct * ALERT_SPIKE_MULTIPLIER, ALERT_MIN_ABSOLUTE_PCT)` (constants in `config/constants.py`). Spikes are posted to Slack via Incoming Webhook and logged to `dq_alert_log` (audit trail + dedupe so the same run never re-alerts).
 - `notebooks/dq_alert_check.py` reads the webhook URL from a Databricks secret scope (never a plaintext parameter) and runs the check.
-- Wired into `databricks.yml` as the `dq_alert_check` job on a 15-minute cron schedule — the **first scheduled job** in the bundle; every other job today is manually triggered.
+- For the **batch** path, `check_alerts` runs as the last task of `[RTM] Batch DQX Pipeline` (see section 7, Phase 1) — triggered by the pipeline completing, not a clock. For the **streaming** path, which has no "run completed" moment to hang a trigger off of, `[RTM] DQ Alert Check (Streaming)` stays on a 15-minute cron.
 
 **2. Native Databricks SQL Alert (alternative path)**
 For teams that prefer zero-code, UI-configured alerting:

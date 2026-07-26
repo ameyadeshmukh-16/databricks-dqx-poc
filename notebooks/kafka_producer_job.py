@@ -22,6 +22,8 @@ Architecture:
 # Imports
 # -----------------------------------
 import json
+import time
+from datetime import datetime
 from dotenv import load_dotenv
 
 # -----------------------------------
@@ -34,6 +36,47 @@ load_dotenv()
 # -----------------------------------
 from src.logger import get_logger
 logger = get_logger(__name__)
+
+# -----------------------------------
+# Spark Session
+# -----------------------------------
+# Needed only to poll the consumer's readiness signal (see below) — the
+# producer itself talks to Kafka directly and has no other Spark dependency.
+from databricks.connect import DatabricksSession
+spark = DatabricksSession.builder.getOrCreate()
+
+# -----------------------------------
+# Wait for Consumer Readiness
+# -----------------------------------
+# In rtm_kafka_streaming, this task starts concurrently with
+# kafka_stream_dqx_validation.py rather than depends_on it — Databricks
+# depends_on waits for the upstream task to terminate, and the consumer runs
+# forever. Poll stream_consumer_ready instead: it's written once the consumer
+# is actively listening, so events aren't sent before anything can receive them.
+from config.constants import TABLE_STREAM_READY
+
+_READY_TIMEOUT_SECS = 120
+_READY_MAX_AGE_SECS = 300
+
+_deadline = time.time() + _READY_TIMEOUT_SECS
+_ready = False
+while time.time() < _deadline:
+    try:
+        _row = spark.sql(f"SELECT MAX(started_at) AS t FROM {TABLE_STREAM_READY}").first()
+        if _row and _row["t"] and (datetime.now() - _row["t"]).total_seconds() < _READY_MAX_AGE_SECS:
+            _ready = True
+            break
+    except Exception:
+        pass  # table may not exist yet if the consumer hasn't started
+    time.sleep(5)
+
+if _ready:
+    logger.info("Consumer readiness signal found — starting to send events.")
+else:
+    logger.warning(
+        "Consumer readiness signal not found after %ds — sending anyway.",
+        _READY_TIMEOUT_SECS,
+    )
 
 # -----------------------------------
 # Job Widgets
@@ -80,8 +123,6 @@ except Exception as exc:
 # -----------------------------------
 # Send Loop
 # -----------------------------------
-import time
-
 i = 0
 try:
     while run_forever or i < num_events:

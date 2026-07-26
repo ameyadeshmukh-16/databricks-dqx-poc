@@ -68,6 +68,7 @@ from config.constants import (
     TABLE_STREAM_QUARANTINE,
     TABLE_BATCH_METRICS,
     TABLE_RULES,
+    TABLE_STREAM_READY,
     DATABASE,
     STREAMING_TRIGGER_INTERVAL,
     STREAMING_RULE_CONFIG_NAME,
@@ -350,6 +351,25 @@ query = (
 )
 
 logger.info("Kafka stream started. Run kafka_producer.py or the Kafka Producer Job to send events.")
+
+# -----------------------------------
+# Readiness Signal
+# -----------------------------------
+# Written once the stream is actively listening, so the producer job (which
+# starts concurrently in rtm_kafka_streaming — Databricks depends_on can't
+# express "wait for a task that never terminates") can poll for this instead
+# of sending events into a consumer that isn't subscribed yet.
+spark.sql(f"""
+    CREATE TABLE IF NOT EXISTS {TABLE_STREAM_READY} (
+        started_at TIMESTAMP,
+        run_id     STRING
+    ) USING DELTA
+""")
+spark.createDataFrame(
+    [(datetime.now(), str(uuid.uuid4()))],
+    ["started_at", "run_id"],
+).write.format("delta").mode("append").saveAsTable(TABLE_STREAM_READY)
+logger.info("Readiness signal written to %s", TABLE_STREAM_READY)
 
 # -----------------------------------
 # Live Batch Monitor
