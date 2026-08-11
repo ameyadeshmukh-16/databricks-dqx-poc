@@ -1,19 +1,131 @@
-# This is a Databricks asset bundle definition for databricks-dqx-poc.
-# The Databricks extension requires databricks.yml configuration file.
-# See https://docs.databricks.com/dev-tools/bundles/index.html for documentation.
+# Databricks Asset Bundle — databricks-dqx-poc
+# See https://docs.databricks.com/dev-tools/bundles/index.html
 
 bundle:
   name: databricks-dqx-poc
+
+variables:
+  cluster_id:
+    description: "Databricks cluster ID to run jobs on"
+    default: "0601-042329-nm42bg1s"
 
 targets:
   dev:
     mode: development
     default: true
     workspace:
-      host: https://adb-7405616830421154.14.azuredatabricks.net
+      host: https://adb-7405619883480512.12.azuredatabricks.net
 
   ## Optionally, there could be 'staging' or 'prod' targets here.
   #
   # prod:
   #   workspace:
-  #     host: https://adb-7405616830421154.14.azuredatabricks.net
+  #     host: https://adb-7405619883480512.12.azuredatabricks.net
+
+resources:
+  jobs:
+    rtm_kafka_streaming:
+      name: "[RTM] Kafka Streaming Pipeline"
+      tasks:
+        - task_key: stream_and_validate
+          spark_python_task:
+            python_file: ./notebooks/kafka_stream_dqx_validation.py
+          existing_cluster_id: ${var.cluster_id}
+          timeout_seconds: 0    # run indefinitely until stopped
+
+        - task_key: produce_events
+          # No depends_on: stream_and_validate never terminates (it runs
+          # indefinitely), so Databricks depends_on — which waits for the
+          # upstream task to reach a terminal state — would never fire. Both
+          # tasks start concurrently; produce_events polls a readiness signal
+          # (stream_consumer_ready) written by the consumer once it is
+          # actually listening, before it sends any events.
+          spark_python_task:
+            python_file: ./notebooks/kafka_producer_job.py
+            parameters:
+              - "--num_events=1000"
+              - "--batch_size=10"
+              - "--interval_seconds=5"
+          existing_cluster_id: ${var.cluster_id}
+
+    rtm_batch_pipeline:
+      name: "[RTM] Batch DQX Pipeline"
+      tasks:
+        - task_key: stage_data
+          spark_python_task:
+            python_file: ./notebooks/setup_delta_tables.py
+            parameters:
+              - "--csv_path=abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/sales_transactions.csv"
+              - "--database=retail_dqx_poc"
+          existing_cluster_id: ${var.cluster_id}
+
+        - task_key: validate_data
+          depends_on:
+            - task_key: stage_data
+          spark_python_task:
+            python_file: ./notebooks/batch_dqx_validation.py
+            parameters:
+              - "--database=retail_dqx_poc"
+          existing_cluster_id: ${var.cluster_id}
+
+        - task_key: suggest_rules
+          depends_on:
+            - task_key: validate_data
+          notebook_task:
+            notebook_path: ./notebooks/ai_rule_suggester.py
+            base_parameters:
+              source_table: "dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_staging"
+              run_config_name: "sales_batch_rules"
+              context_description: "Retail POS sales transactions from brick-and-mortar stores"
+              llm_backend: "openrouter"
+          existing_cluster_id: ${var.cluster_id}
+
+        - task_key: analyze_quarantine
+          depends_on:
+            - task_key: validate_data
+          notebook_task:
+            notebook_path: ./notebooks/quarantine_analyzer.py
+            base_parameters:
+              quarantine_table: "dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_quarantine"
+              run_config_name: "sales_batch_rules"
+              context_description: "Retail POS sales transactions from brick-and-mortar stores"
+              llm_backend: "openrouter"
+              top_n: "20"
+          existing_cluster_id: ${var.cluster_id}
+
+        - task_key: run_report
+          depends_on:
+            - task_key: suggest_rules
+            - task_key: analyze_quarantine
+          notebook_task:
+            notebook_path: ./notebooks/rule_effectiveness_report.py
+            base_parameters:
+              run_config_name: "sales_batch_rules"
+              lookback_runs: "10"
+          existing_cluster_id: ${var.cluster_id}
+
+        - task_key: check_alerts
+          depends_on:
+            - task_key: run_report
+          notebook_task:
+            notebook_path: ./notebooks/dq_alert_check.py
+            base_parameters:
+              run_config_name: "sales_batch_rules"
+              lookback_runs: "10"
+              secret_scope: "dqx-poc"
+          existing_cluster_id: ${var.cluster_id}
+
+    dq_alert_check_streaming:
+      name: "[RTM] DQ Alert Check (Streaming)"
+      tasks:
+        - task_key: check_alerts
+          notebook_task:
+            notebook_path: ./notebooks/dq_alert_check.py
+            base_parameters:
+              run_config_name: "streaming_event_rules"
+              lookback_runs: "10"
+              secret_scope: "dqx-poc"
+          existing_cluster_id: ${var.cluster_id}
+      schedule:
+        quartz_cron_expression: "0 */15 * * * ?"
+        timezone_id: "UTC"

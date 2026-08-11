@@ -1,4 +1,5 @@
 #import necessary libraries
+import os
 from pyspark.sql.functions import col, current_timestamp, expr, size
 from pyspark.sql.types import *
 # import yaml   # REMOVED - YAML is no longer needed at runtime
@@ -68,7 +69,7 @@ schema = StructType([
 # -------------------------------
 spark.conf.set(
   "fs.azure.account.key.databricksdqxpocstorage.dfs.core.windows.net",
-  "1yzZf4Tic4E5vhEerdoKaww9DR6YkC4PE1UPLx64BFEQCOLljSOAUaX/jsBtDv8kfI77lA6EsQMz+AStWbmomA=="
+  os.environ["AZURE_STORAGE_KEY"]
 )
 
 INPUT_PATH = "abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/stream_input"

@@ -1,60 +1,85 @@
-# Purpose: Create Delta tables for clean data, quarantine, and metrics
+"""
+Setup Delta Tables — Stage raw CSV data for batch DQX validation.
 
-#Load Environment Variables - Loads values from our .env file
-from dotenv import load_dotenv
+Reads the raw sales CSV from ADLS Gen2 and writes it to the
+sales_staging Delta table. Run this once before batch_dqx_validation.py.
+"""
+
+# -----------------------------------
+# Imports
+# -----------------------------------
 import os
+from dotenv import load_dotenv
+from databricks.connect import DatabricksSession
+
+# -----------------------------------
+# Environment
+# -----------------------------------
 load_dotenv()
 
-#Create Spark Session - Connect to Databricks cluster using Databricks Connect - allows us to run Spark code from this local notebook and have it execute on the Databricks cluster
-from databricks.connect import DatabricksSession
-spark = DatabricksSession.builder.getOrCreate()
+# -----------------------------------
+# Logging
+# -----------------------------------
+from src.logger import get_logger
+logger = get_logger(__name__)
 
-# Set up database and storage access - we will create our Delta tables in the "retail_dqx_poc" database and read/write data from the "databricks-dqx-poc-storage" Azure Data Lake Storage Gen2 account
-spark.sql("CREATE DATABASE IF NOT EXISTS retail_dqx_poc")
-spark.sql("USE retail_dqx_poc")
-
-# Configure Spark to access Azure Data Lake Storage Gen2 - we set the storage account key in Spark configuration so that we can read/write data to our storage account
-spark.conf.set(
-  "fs.azure.account.key.databricksdqxpocstorage.dfs.core.windows.net",
-  os.environ["AZURE_STORAGE_KEY"]
+# -----------------------------------
+# Constants
+# -----------------------------------
+from config.constants import (
+    DATABASE,
+    TABLE_STAGING,
+    ADLS_BASE,
+    STORAGE_ACCOUNT,
 )
 
-# Load raw CSV into a staging DataFrame - we read the CSV file we generated in the previous step into a Spark DataFrame. This is our raw data that we will apply quality rules to in the next steps.
-sales_raw = (spark.read
-    .option("header", "true")                           # First row contains column names
-    .option("inferSchema", "true")                      # Automatically infer data types for each column
-    .csv("abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/sales_transactions.csv"))
+# -----------------------------------
+# Spark Session
+# -----------------------------------
+spark = DatabricksSession.builder.getOrCreate()
 
-# Write raw DataFrame to a Delta table - we write the raw DataFrame to a Delta table called "sales_staging". This allows us to efficiently store and query the raw data in subsequent steps when we apply our data quality rules.
-(sales_raw.write
-    .format("delta")                                    # Write data in Delta format for ACID transactions and efficient querying
-    .mode("overwrite")                                  # Overwrite the table if it already exists
-    .saveAsTable("retail_dqx_poc.sales_staging"))       # Save the DataFrame as a managed Delta table in the "retail_dqx_poc" database with the name "sales_staging".
+# -----------------------------------
+# Storage Config
+# -----------------------------------
+spark.conf.set(
+    f"fs.azure.account.key.{STORAGE_ACCOUNT}.dfs.core.windows.net",
+    os.environ["AZURE_STORAGE_KEY"],
+)
 
-# Print the number of rows staged into the sales_staging table - this gives us a quick check to confirm that our data was loaded successfully and we have the expected number of records to work with in the next steps.
-print(f"Staged {sales_raw.count()} rows into sales_staging")
+# -----------------------------------
+# Widgets
+# -----------------------------------
+# Allow overriding the CSV path and database when running as a Databricks Job.
+dbutils.widgets.text("csv_path", f"{ADLS_BASE}/sales_transactions.csv", "ADLS CSV path")
+dbutils.widgets.text("database", DATABASE, "Target database")
 
+csv_path = dbutils.widgets.get("csv_path")
+database = dbutils.widgets.get("database")
 
-"""
-Right now we have our raw data in the "sales_staging" Delta table. 
-In the next steps, 
-    we will read from this staging table, 
-    apply our data quality rules as defined in rules_batch.yml, 
-    and then write the clean records to a "sales_clean" Delta table 
-    and the quarantined records to a "sales_quarantine" Delta table. 
-    We will also create a "data_quality_metrics" Delta table to store metrics about the data quality checks.
+# -----------------------------------
+# Create Database
+# -----------------------------------
+spark.sql(f"CREATE DATABASE IF NOT EXISTS {database}")
+spark.sql(f"USE {database}")
+logger.info("Using database: %s", database)
 
-[CSV Raw Data]
-       ↓
-[Spark DataFrame]
-       ↓
-[Delta Table → sales_staging]
+# -----------------------------------
+# Load CSV → Staging
+# -----------------------------------
+logger.info("Reading CSV from: %s", csv_path)
 
-********************************
-Why This Step is Critical
-********************************
-Because:
+sales_raw = (
+    spark.read
+        .option("header", "true")
+        .option("inferSchema", "true")
+        .csv(csv_path)
+)
 
-DQX NEVER works directly on raw files       ->      It works on DataFrames / Tables
+(
+    sales_raw.write
+        .format("delta")
+        .mode("overwrite")
+        .saveAsTable(TABLE_STAGING)
+)
 
-"""
+logger.info("Staged %d rows into %s", sales_raw.count(), TABLE_STAGING)
