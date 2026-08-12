@@ -1,8 +1,8 @@
 # DQX POC — Technical Deep Dive Documentation
 
 > **Audience:** Technical leads, engineers, architects
-> **Branch:** `claude/rule-effectiveness` (latest)
-> **Last updated:** June 2026
+> **Branch:** `main` (latest)
+> **Last updated:** August 2026
 
 ---
 
@@ -17,12 +17,13 @@
 7. [Phase 3 — AI Rule Suggester](#7-phase-3--ai-rule-suggester)
 8. [Phase 4 — Quarantine Analyzer](#8-phase-4--quarantine-analyzer)
 9. [Phase 5 — Rule Effectiveness Dashboard](#9-phase-5--rule-effectiveness-dashboard)
-10. [Delta Table Schemas](#10-delta-table-schemas)
-11. [Cross-Module Dependency Graph](#11-cross-module-dependency-graph)
-12. [Rule Lifecycle State Machine](#12-rule-lifecycle-state-machine)
-13. [Test Coverage](#13-test-coverage)
-14. [Environment Variables Reference](#14-environment-variables-reference)
-15. [Databricks Jobs Reference](#15-databricks-jobs-reference)
+10. [Stage A — Data Quality Alerting](#10-stage-a--data-quality-alerting)
+11. [Delta Table Schemas](#11-delta-table-schemas)
+12. [Cross-Module Dependency Graph](#12-cross-module-dependency-graph)
+13. [Rule Lifecycle State Machine](#13-rule-lifecycle-state-machine)
+14. [Test Coverage](#14-test-coverage)
+15. [Environment Variables Reference](#15-environment-variables-reference)
+16. [Databricks Jobs Reference](#16-databricks-jobs-reference)
 
 ---
 
@@ -54,7 +55,8 @@ databricks-dqx-poc/
 │   ├── llm_rule_suggester.py  ← suggest_llm_rules() — prompt builder + response parser
 │   ├── rule_writer.py         ← write/promote/reject suggestions in Delta
 │   ├── quarantine_analyzer.py ← extract_violation_patterns() + suggest_rules_from_quarantine()
-│   └── rule_metrics.py        ← compute_rule_metrics() + write_rule_metrics()
+│   ├── rule_metrics.py        ← compute_rule_metrics() + write_rule_metrics()
+│   └── alerting.py            ← detect_spikes() + Slack notification + dq_alert_log audit trail
 │
 ├── notebooks/
 │   ├── setup_delta_tables.py          ← Batch: load CSV → sales_staging
@@ -63,18 +65,28 @@ databricks-dqx-poc/
 │   ├── kafka_stream_dqx_validation.py ← Streaming: consume + validate + split
 │   ├── ai_rule_suggester.py           ← AI Rule Suggester notebook (5 steps)
 │   ├── quarantine_analyzer.py         ← Quarantine Analyzer notebook (4 steps)
-│   └── rule_effectiveness_report.py   ← Effectiveness Dashboard notebook (4 panels)
+│   ├── rule_effectiveness_report.py   ← Effectiveness Dashboard notebook (4 panels)
+│   ├── dq_alert_check.py              ← Stage A: spike detection + Slack alert notebook
+│   └── [legacy, superseded by the Kafka/Delta-registry pipeline above — kept for
+│        reference, not wired into any job]: streaming_dqx_validation.py,
+│        streaming_dqx_validation_adls.py, stream_simulator*.py,
+│        kafka_consumer_simple.py, kafka_read_stream.py, sample_data_generation.py,
+│        testing.py
 │
 ├── tests/
 │   ├── __init__.py
-│   ├── test_profiler.py           ← 10 tests (PySpark, local session)
-│   ├── test_rule_generator.py     ← 16 tests (pure Python)
-│   ├── test_quarantine_analyzer.py ← 13 tests (pure Python)
-│   └── test_rule_metrics.py       ← 9 tests (pure Python)
+│   ├── test_profiler.py            ← 10 tests (PySpark, local session)
+│   ├── test_rule_generator.py      ← 16 tests (pure Python)
+│   ├── test_quarantine_analyzer.py ← 14 tests (pure Python)
+│   ├── test_rule_metrics.py        ← 9 tests (pure Python)
+│   ├── test_alerting.py            ← 11 tests (pure Python)
+│   ├── test_config.py              ← 5 tests (pure Python)
+│   └── test_event_generator.py     ← 9 tests (pure Python)
 │
 ├── configs/
-│   ├── rules_batch.yml            ← YAML source for batch rules (loaded into registry)
-│   └── rules_streaming.yml        ← YAML source for streaming rules
+│   ├── rules_batch.yml            ← Legacy YAML rule examples — NOT loaded by any
+│   └── rules_streaming.yml          current pipeline; live rules come from the
+│                                     dq_rules_registry Delta table (see §7.5)
 │
 ├── databricks.yml                 ← Databricks Asset Bundle job definitions
 ├── requirements.txt               ← Pinned Python dependencies
@@ -163,6 +175,16 @@ databricks-dqx-poc/
                     │   · Violation Trend         │
                     │   · Top Offenders           │
                     │   · Zero-fire Candidates    │
+                    └──────────────┬──────────────┘
+                                   │
+                    ┌──────────────▼──────────────┐
+                    │   ALERTING (Stage A)        │
+                    │   ai_suggester/alerting.py  │
+                    │   · detect_spikes()         │
+                    │   · Slack webhook notify    │
+                    │   · → dq_alert_log          │
+                    │   (also: native SQL Alert   │
+                    │    on dq_rule_metrics)       │
                     └─────────────────────────────┘
 ```
 
@@ -312,7 +334,7 @@ logger.debug("...")   # suppressed at INFO level unless level changed
 
 ### 4.1 `databricks.yml` — Databricks Asset Bundle
 
-Defines 6 Databricks Jobs deployable via `databricks bundle deploy --target dev`.
+Defines 3 Databricks Jobs deployable via `databricks bundle deploy --target dev`. What were originally 6 independent, manually-triggered jobs have been chained into 3 orchestrated flows (see commits `b9510e8`, `1d1c878`) — the batch stages now run as a single 6-task DAG, and the two Kafka tasks run concurrently in one job using a readiness-signal handshake instead of Databricks' `depends_on` (which requires the upstream task to reach a terminal state — impossible for a `timeout_seconds: 0` streaming task).
 
 ```
 Target: dev
@@ -322,14 +344,13 @@ Cluster ID: 0601-042329-nm42bg1s
 
 **Job inventory:**
 
-| Job Key | Display Name | Entry Point | Task Type | Notes |
-|---|---|---|---|---|
-| `rtm_kafka_producer` | [RTM] Kafka Producer Job | `notebooks/kafka_producer_job.py` | `spark_python_task` | Finite: sends N events then exits |
-| `rtm_kafka_consumer` | [RTM] Kafka Stream DQX Validation | `notebooks/kafka_stream_dqx_validation.py` | `spark_python_task` | `timeout_seconds: 0` — runs until cancelled |
-| `rtm_batch_pipeline` | [RTM] Batch DQX Validation | `setup_delta_tables.py` → `batch_dqx_validation.py` | `spark_python_task` | Two sequential tasks via `depends_on` |
-| `ai_rule_suggester` | [RTM] AI Rule Suggester | `notebooks/ai_rule_suggester.py` | `notebook_task` | Parameterised via `base_parameters` |
-| `quarantine_analyzer` | [RTM] Quarantine Analyzer | `notebooks/quarantine_analyzer.py` | `notebook_task` | Parameterised via `base_parameters` |
-| `rule_effectiveness_report` | [RTM] Rule Effectiveness Report | `notebooks/rule_effectiveness_report.py` | `notebook_task` | Parameterised via `base_parameters` |
+| Job Key | Display Name | Tasks | Notes |
+|---|---|---|---|
+| `rtm_kafka_streaming` | [RTM] Kafka Streaming Pipeline | `stream_and_validate` (`kafka_stream_dqx_validation.py`, `timeout_seconds: 0`) + `produce_events` (`kafka_producer_job.py`) | Both tasks start concurrently, no `depends_on`; producer polls a `stream_consumer_ready` signal before sending events |
+| `rtm_batch_pipeline` | [RTM] Batch DQX Pipeline | `stage_data` → `validate_data` → `{suggest_rules, analyze_quarantine}` → `run_report` → `check_alerts` | 6-task DAG; `suggest_rules` and `analyze_quarantine` run in parallel off `validate_data`, `run_report` waits on both, `check_alerts` runs last |
+| `dq_alert_check_streaming` | [RTM] DQ Alert Check (Streaming) | `check_alerts` (`dq_alert_check.py`, `run_config_name=streaming_event_rules`) | Cron-scheduled every 15 minutes (`0 */15 * * * ?` UTC) — the batch DAG's `check_alerts` task only covers batch rules, so streaming rules need this separate scheduled check |
+
+See [§16 Databricks Jobs Reference](#16-databricks-jobs-reference) for full task parameters.
 
 ---
 
@@ -1090,7 +1111,87 @@ WHERE r.run_config_name = '{run_config_name}' AND m.rule_name IS NULL
 
 ---
 
-## 10. Delta Table Schemas
+## 10. Stage A — Data Quality Alerting
+
+### 10.1 `ai_suggester/alerting.py`
+
+**Purpose:** Detects rules whose `violation_pct` has spiked above their own historical baseline and notifies a Slack channel via Incoming Webhook. Runs after the Rule Effectiveness Dashboard step in the batch DAG, and on its own 15-minute cron for streaming.
+
+**Key functions:**
+
+```python
+def detect_spikes(spark, run_config_name: str, lookback_runs: int = ALERT_LOOKBACK_RUNS) -> list[dict]
+```
+Compares each rule's most recent `violation_pct` (from `dq_rule_metrics`) against the average of its prior `lookback_runs` (baseline). A rule is a "spike" if:
+```
+last_run_pct > GREATEST(baseline_pct * ALERT_SPIKE_MULTIPLIER, ALERT_MIN_ABSOLUTE_PCT)
+```
+and the rule has at least `ALERT_MIN_BASELINE_RUNS` prior runs, and the run hasn't already been logged in `dq_alert_log` (dedupe via `LEFT JOIN ... WHERE alert_id IS NULL`).
+
+```python
+def format_slack_message(spikes: list[dict]) -> dict
+```
+Pure Python — builds a Slack Block Kit payload (`header` + `section` blocks) listing each spike's rule name, run config, last-run % vs. baseline %, and multiplier. No Spark dependency, unit-testable directly.
+
+```python
+def send_slack_alert(payload: dict, webhook_url: str) -> tuple[bool, str | None]
+```
+POSTs to a Slack Incoming Webhook via `requests`. Returns `(success, error_message)`.
+
+```python
+def write_alert_log(spikes: list[dict], notified: bool, error: str | None, spark) -> int
+```
+Appends one `dq_alert_log` row per spike (audit trail + source of the dedupe join in `detect_spikes`).
+
+```python
+def run_alert_check(spark, run_config_name: str, webhook_url: str, lookback_runs: int = ALERT_LOOKBACK_RUNS) -> list[dict]
+```
+Orchestrates the full check: `detect_spikes()` → if none, return `[]`; if `webhook_url` is empty, log spikes with `notified=False` and skip Slack; otherwise format + send + log. Returns the spikes processed either way.
+
+**Alerting constants** (`config/constants.py`):
+```python
+TABLE_ALERT_LOG          = f"{CATALOG}.{DATABASE}.dq_alert_log"
+ALERT_LOOKBACK_RUNS      = 10    # runs used to compute a rule's baseline violation_pct
+ALERT_SPIKE_MULTIPLIER   = 2.5   # last run must exceed baseline_pct * this to be a spike
+ALERT_MIN_ABSOLUTE_PCT   = 5.0   # floor so a near-zero baseline doesn't trivially "spike"
+ALERT_MIN_BASELINE_RUNS  = 3     # don't alert until a rule has at least this many prior runs
+```
+
+### 10.2 `notebooks/dq_alert_check.py`
+
+**Widgets:**
+
+| Widget | Default | Description |
+|---|---|---|
+| `run_config_name` | `sales_batch_rules` | dropdown: `sales_batch_rules` \| `streaming_event_rules` |
+| `lookback_runs` | `10` | Runs used to compute baseline |
+| `secret_scope` | `dqx-poc` | Databricks secret scope holding the Slack webhook URL |
+
+**Execution flow:**
+```
+Step 1: webhook_url = dbutils.secrets.get(scope=secret_scope, key="slack_webhook_url")
+        (falls back to "" and continues — spikes still detected/logged, no Slack send)
+
+Step 2: spikes = run_alert_check(spark, run_config_name, webhook_url, lookback_runs)
+        prints each spike's rule_name, last_run_pct vs. baseline_pct
+
+Step 3: display(SELECT * FROM dq_alert_log WHERE run_config_name = '{run_config_name}'
+                 ORDER BY triggered_at DESC LIMIT 50)
+```
+
+**Required cluster secret setup:**
+```bash
+databricks secrets create-scope dqx-poc
+databricks secrets put-secret dqx-poc slack_webhook_url
+```
+
+### 10.3 Native SQL Alert alternative
+
+Databricks SQL Alerts can query `dq_rule_metrics` directly (e.g. `violation_pct > threshold` on the latest run) as a no-code alternative to the Slack-webhook path above, using Databricks' built-in alert notification channels (email, Slack app, PagerDuty, webhook). This is documented as an alternative delivery mechanism in the management doc (§10) — the `ai_suggester/alerting.py` path is the one with baseline/spike-detection logic and an audit trail (`dq_alert_log`); a native SQL Alert is simpler but only supports static thresholds, not the rolling-baseline comparison.
+
+---
+
+## 11. Delta Table Schemas
 
 ### `dq_rules_registry`
 DQX native nested schema (managed by `promote_rule()`):
@@ -1153,6 +1254,20 @@ total_count      LONG
 processed_at     TIMESTAMP
 ```
 
+### `dq_alert_log`
+```sql
+alert_id         STRING       -- UUID, one row per (rule, run) spike
+rule_name        STRING
+run_config_name  STRING
+run_id           STRING       -- the run_id whose spike triggered this alert
+baseline_pct     DOUBLE       -- average violation_pct over the lookback window
+last_run_pct     DOUBLE       -- violation_pct of the run that triggered the alert
+multiplier_used  DOUBLE       -- ALERT_SPIKE_MULTIPLIER at time of trigger
+triggered_at     TIMESTAMP
+notified         BOOLEAN      -- true if the Slack webhook POST succeeded
+notify_error     STRING       -- error message if notified = false; NULL otherwise
+```
+
 ### `sales_staging`, `sales_clean`, `sales_quarantine`, `stream_events_clean`, `stream_events_quarantine`
 Schema inferred from source data. Quarantine tables include additional DQX columns:
 - `_errors: ARRAY<STRUCT<name, message, function, columns, run_time, run_id, user_metadata MAP<STRING,STRING>, rule_fingerprint, rule_set_fingerprint, skipped>>`
@@ -1160,7 +1275,7 @@ Schema inferred from source data. Quarantine tables include additional DQX colum
 
 ---
 
-## 11. Cross-Module Dependency Graph
+## 12. Cross-Module Dependency Graph
 
 ```
 notebooks/batch_dqx_validation.py
@@ -1219,6 +1334,19 @@ ai_suggester.rule_writer
 ai_suggester.rule_metrics
     └── config.constants  (TABLE_RULE_METRICS)
 
+ai_suggester.alerting
+    ├── requests  (send_slack_alert — deferred import)
+    ├── pyspark.sql.types  (write_alert_log — deferred import)
+    ├── config.constants  (TABLE_ALERT_LOG, TABLE_RULE_METRICS, ALERT_LOOKBACK_RUNS,
+    │                      ALERT_SPIKE_MULTIPLIER, ALERT_MIN_ABSOLUTE_PCT,
+    │                      ALERT_MIN_BASELINE_RUNS)
+    └── src.logger.get_logger
+
+notebooks/dq_alert_check.py
+    ├── ai_suggester.alerting  (run_alert_check)
+    ├── config.constants  (TABLE_ALERT_LOG)
+    └── dbutils.secrets  (slack_webhook_url from secret_scope)
+
 notebooks/ai_rule_suggester.py
     ├── ai_suggester.profiler  (profile_dataframe)
     ├── ai_suggester.rule_generator  (suggest_statistical_rules)
@@ -1235,7 +1363,7 @@ notebooks/quarantine_analyzer.py
 
 ---
 
-## 12. Rule Lifecycle State Machine
+## 13. Rule Lifecycle State Machine
 
 ```
                     ┌─────────────────────────────────────────────────────┐
@@ -1285,18 +1413,21 @@ notebooks/quarantine_analyzer.py
 
 ---
 
-## 13. Test Coverage
+## 14. Test Coverage
 
 ### Test Files and Coverage
 
 | File | Tests | Requires PySpark | Key Scenarios |
 |---|---|---|---|
 | `tests/test_profiler.py` | 10 | Yes (local session) | Column coverage, null%, numeric stats, distinct values, complex type handling, metadata column skipping |
-| `tests/test_rule_generator.py` | 16 | No | is_not_null threshold, allowlist conditions, min/max rules, `_round_up_ceiling`, source/key validation |
-| `tests/test_quarantine_analyzer.py` | 13 | No | `_build_prompt` content, `_parse_response` JSON parsing, markdown stripping, missing keys, bad criticality |
+| `tests/test_rule_generator.py` | 23 | No | is_not_null threshold, allowlist conditions, min/max rules, `_round_up_ceiling` (parametrised), source/key validation |
+| `tests/test_quarantine_analyzer.py` | 14 | No | `_build_prompt` content, `_parse_response` JSON parsing, markdown stripping, missing keys, bad criticality |
 | `tests/test_rule_metrics.py` | 9 | No | `_build_metrics_from_rows` dict structure, pct calculation, zero total, `write_rule_metrics` mock |
+| `tests/test_alerting.py` | 11 | No | `detect_spikes` SQL logic (mocked), `format_slack_message` content, `send_slack_alert` success/failure, `run_alert_check` orchestration |
+| `tests/test_config.py` | 9 | No | `Settings.from_env()` required-field validation, defaults for optional fields |
+| `tests/test_event_generator.py` | 9 | No | Schema keys, field formats/types, bad-data injection rate bounds |
 
-**Total: 48 tests**
+**Total: 85 tests**, all passing.
 
 ### Running Tests
 
@@ -1328,7 +1459,7 @@ def spark():
 
 ---
 
-## 14. Environment Variables Reference
+## 15. Environment Variables Reference
 
 **Required on Databricks cluster** (set via Compute → Edit → Environment Variables; values from Azure Key Vault via `{{secrets/kv-dqx-scope/SECRET-NAME}}`):
 
@@ -1358,76 +1489,77 @@ DATABRICKS_CLUSTER_ID=0601-042329-nm42bg1s
 
 ---
 
-## 15. Databricks Jobs Reference
+## 16. Databricks Jobs Reference
 
-### Job: `[RTM] Batch DQX Validation`
-
-```
-Tasks (sequential):
-  1. stage_data      → notebooks/setup_delta_tables.py
-     Parameters:
-       --csv_path=abfss://databricks-dqx@databricksdqxpocstorage.../sales_transactions.csv
-       --database=retail_dqx_poc
-
-  2. validate_data   → notebooks/batch_dqx_validation.py
-     Parameters:
-       --database=retail_dqx_poc
-     depends_on: stage_data
-```
-
-### Job: `[RTM] Kafka Stream DQX Validation`
+### Job: `[RTM] Kafka Streaming Pipeline` (`rtm_kafka_streaming`)
 
 ```
-Tasks:
+Tasks (concurrent — no depends_on):
   1. stream_and_validate → notebooks/kafka_stream_dqx_validation.py
      timeout_seconds: 0   (runs indefinitely until cancelled)
-```
 
-### Job: `[RTM] Kafka Producer Job`
-
-```
-Tasks:
-  1. produce_events → notebooks/kafka_producer_job.py
+  2. produce_events      → notebooks/kafka_producer_job.py
      Parameters:
        --num_events=1000
        --batch_size=10
        --interval_seconds=5
 ```
+`produce_events` has no `depends_on` on `stream_and_validate` — a streaming task with `timeout_seconds: 0` never reaches a terminal state, so Databricks' `depends_on` would never fire. Both tasks start together; the producer polls a `stream_consumer_ready` readiness signal written by the consumer once it's actually listening, before it sends any events.
 
-### Job: `[RTM] AI Rule Suggester`
+### Job: `[RTM] Batch DQX Pipeline` (`rtm_batch_pipeline`)
 
 ```
-Tasks:
-  1. suggest_rules → notebooks/ai_rule_suggester.py (notebook_task)
+Tasks (DAG):
+  1. stage_data          → notebooks/setup_delta_tables.py
+     Parameters:
+       --csv_path=abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/sales_transactions.csv
+       --database=retail_dqx_poc
+
+  2. validate_data       → notebooks/batch_dqx_validation.py    depends_on: stage_data
+     Parameters:
+       --database=retail_dqx_poc
+
+  3. suggest_rules       → notebooks/ai_rule_suggester.py (notebook_task)   depends_on: validate_data
      base_parameters:
        source_table:        dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_staging
        run_config_name:     sales_batch_rules
        context_description: Retail POS sales transactions from brick-and-mortar stores
        llm_backend:         openrouter
-```
 
-### Job: `[RTM] Quarantine Analyzer`
-
-```
-Tasks:
-  1. analyze_quarantine → notebooks/quarantine_analyzer.py (notebook_task)
+  4. analyze_quarantine  → notebooks/quarantine_analyzer.py (notebook_task)   depends_on: validate_data
      base_parameters:
        quarantine_table:    dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_quarantine
        run_config_name:     sales_batch_rules
        context_description: Retail POS sales transactions from brick-and-mortar stores
        llm_backend:         openrouter
        top_n:               20
-```
 
-### Job: `[RTM] Rule Effectiveness Report`
-
-```
-Tasks:
-  1. run_report → notebooks/rule_effectiveness_report.py (notebook_task)
+  5. run_report          → notebooks/rule_effectiveness_report.py (notebook_task)   depends_on: [suggest_rules, analyze_quarantine]
      base_parameters:
        run_config_name: sales_batch_rules
        lookback_runs:   10
+
+  6. check_alerts        → notebooks/dq_alert_check.py (notebook_task)   depends_on: run_report
+     base_parameters:
+       run_config_name: sales_batch_rules
+       lookback_runs:   10
+       secret_scope:    dqx-poc
 ```
+`suggest_rules` and `analyze_quarantine` both depend only on `validate_data` and run in parallel; `run_report` waits on both before running; `check_alerts` runs last.
+
+### Job: `[RTM] DQ Alert Check (Streaming)` (`dq_alert_check_streaming`)
+
+```
+Tasks:
+  1. check_alerts → notebooks/dq_alert_check.py (notebook_task)
+     base_parameters:
+       run_config_name: streaming_event_rules
+       lookback_runs:   10
+       secret_scope:    dqx-poc
+
+Schedule: cron "0 */15 * * * ?" (every 15 minutes, UTC)
+```
+Runs independently of the batch DAG's `check_alerts` task since the streaming pipeline has no equivalent end-of-run hook to chain off of — it runs indefinitely.
 
 ---
 

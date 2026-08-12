@@ -2,7 +2,7 @@
 
 > **Audience:** Technical leads and upper management
 > **Purpose:** Current state overview, run guide, and roadmap
-> **Last updated:** June 2026
+> **Last updated:** August 2026
 
 ---
 
@@ -108,7 +108,7 @@ CSV file (ADLS)
   Load into Delta (sales_staging)
       │
       ▼
-  Apply DQX Rules  ◄──── dq_rules_registry (6 rules)
+  Apply DQX Rules  ◄──── dq_rules_registry (run_config_name = sales_batch_rules)
       │
       ├──► ✅ No errors?  ──► sales_clean
       │
@@ -119,14 +119,7 @@ CSV file (ADLS)
 
 **Rules currently enforced (batch):**
 
-| Rule | What It Checks |
-|---|---|
-| `event_id_not_null` | Every transaction must have an ID |
-| `quantity_positive` | Quantity must be greater than zero |
-| `price_positive` | Unit price must be greater than zero |
-| `division_valid` | Division code must be 011, 012, or 013 |
-| `customer_id_not_null` | Customer ID must be present |
-| `transaction_date_not_future` | Transaction date cannot be in the future |
+Live rules are stored only in the `dq_rules_registry` Delta table, not in any file in this repo — the pipeline reads them via `DQEngine.load_checks()` at runtime, so the enforced rule set can change without a code change (that's the point of the design). At the time of writing, the rule set enforced under `run_config_name = sales_batch_rules` covers null checks, positive-value checks (quantity, unit price), and a division allowlist, sourced from a mix of manually-seeded rules and AI/quarantine-suggested rules promoted via `promote_rule()`. Query `dq_rules_registry` directly for the exact live list — the `configs/rules_batch.yml` file in this repo is a legacy example, not loaded by the current pipeline.
 
 ---
 
@@ -139,7 +132,8 @@ Azure Event Hubs (Kafka endpoint)
   Spark Structured Streaming
       │
       ▼
-  Apply DQX Rules  ◄──── dq_rules_registry (6 rules, loaded once at startup)
+  Apply DQX Rules  ◄──── dq_rules_registry (run_config_name = streaming_event_rules,
+                          loaded once at startup)
       │
       ├──► ✅ Clean events  ──► stream_events_clean   (Delta, append)
       │
@@ -305,7 +299,7 @@ Step 1 ──► Run: [RTM] Batch DQX Pipeline   (single job trigger)
            · sales_staging populated (e.g. 10,000 rows)
            · sales_clean: ~85% of rows
            · sales_quarantine: ~15% of rows (bad data injected intentionally)
-           · dq_rule_metrics: 6 rows (one per rule that fired)
+           · dq_rule_metrics: one row per rule that fired this run
            · dq_rules_staging: new AI + quarantine-derived suggestions, status='pending'
            · dq_alert_log: any spikes detected this run
 
@@ -443,12 +437,12 @@ Everything below `validate_data` in the batch path — `suggest_rules`, `analyze
 | Metric | Value |
 |---|---|
 | Pipelines running on Databricks | Batch ✅ Streaming ✅ |
-| DQX rules in production | 12 (6 batch + 6 streaming) |
+| DQX rules in production | Live in `dq_rules_registry` — query it for the current count, since rules change without a code deploy |
 | AI Rule Suggester — live and tested | ✅ |
 | Quarantine Analyzer — live and tested | ✅ |
 | Rule Effectiveness Dashboard | ✅ |
 | Secrets in plaintext / code | 0 (all in Azure Key Vault) |
-| Unit tests passing | 30+ (no Databricks connection needed) |
+| Unit tests passing | 85 (no Databricks connection needed for 75 of them; 10 require a local PySpark session) |
 
 ---
 

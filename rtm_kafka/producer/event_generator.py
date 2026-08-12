@@ -37,7 +37,7 @@ def generate_event(i: int) -> dict:
         "product_id":      f"PROD{random.randint(1, 50):03d}",
         "division":        random.choice(ALL_DIVISIONS),
         "quantity":        random.randint(1, 10) if random.random() > BAD_DATA_RATE_QUANTITY else -1,
-        "unit_price":      round(random.uniform(5, 300), 2) if random.random() > BAD_DATA_RATE_PRICE else 0,
+        "unit_price":      round(random.uniform(5, 300), 2) if random.random() > BAD_DATA_RATE_PRICE else 0.0,
         "coupon_applied":  random.choice([True, False]),
         "event_timestamp": datetime.now().isoformat(),
     }
