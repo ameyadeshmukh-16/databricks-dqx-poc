@@ -186,3 +186,27 @@ def test_all_rules_have_required_keys():
 ])
 def test_round_up_ceiling(value, expected):
     assert _round_up_ceiling(value) == expected
+
+
+# ---------------------------------------------------------------------------
+# code-like integer columns
+# ---------------------------------------------------------------------------
+
+def test_no_range_rules_for_code_like_integer_column():
+    profile = {"division": {
+        "dtype": "IntegerType", "null_pct": 0.0, "distinct_count": 3,
+        "min": 11.0, "max": 999.0, "mean": 100.0, "stddev": 1.0,
+    }}
+    names = _rule_names(suggest_statistical_rules(profile, "cfg"))
+    assert "division_min_value" not in names
+    assert "division_max_value" not in names
+
+
+def test_range_rules_still_generated_for_plain_integer_column():
+    profile = {"quantity": {
+        "dtype": "IntegerType", "null_pct": 0.0, "distinct_count": 10,
+        "min": 1.0, "max": 10.0, "mean": 5.0, "stddev": 1.0,
+    }}
+    names = _rule_names(suggest_statistical_rules(profile, "cfg"))
+    assert "quantity_min_value" in names
+    assert "quantity_max_value" in names

@@ -61,6 +61,38 @@ CREATE TABLE IF NOT EXISTS {TABLE_RULES_STAGING} (
 """
 
 
+def _suggestion_key(name: str, function: str, constraint) -> tuple:
+    """Stable identity of a suggestion: name + function + canonical constraint."""
+    if isinstance(constraint, str):
+        try:
+            constraint = json.loads(constraint or "{}")
+        except json.JSONDecodeError:
+            pass
+    return (name, function, json.dumps(constraint, sort_keys=True, default=str))
+
+
+def filter_new_suggestions(
+    rules: list[dict],
+    pending_keys: set[tuple],
+    live_names: set[str],
+) -> list[dict]:
+    """
+    Drop suggestions that duplicate one already pending for the same rule group
+    (same name, function and constraint), that reuse the name of a live rule, or
+    that repeat an earlier entry in the same batch.
+    """
+    seen = set(pending_keys)
+    kept: list[dict] = []
+    for rule in rules:
+        name = rule.get("name", "")
+        key = _suggestion_key(name, rule.get("function", ""), rule.get("constraint", {}))
+        if name in live_names or key in seen:
+            continue
+        seen.add(key)
+        kept.append(rule)
+    return kept
+
+
 def ensure_staging_table(spark) -> None:
     """Create dq_rules_staging if it does not already exist."""
     spark.sql(_STAGING_DDL)
@@ -82,6 +114,26 @@ def write_suggestions_to_staging(
         return 0
 
     ensure_staging_table(spark)
+
+    pending_keys = {
+        _suggestion_key(r["name"], r["function"], r["constraint"])
+        for r in spark.table(TABLE_RULES_STAGING)
+        .filter(f"run_config_name = '{run_config_name}' AND status = 'pending'")
+        .select("name", "function", "constraint").collect()
+    }
+    live_names = set()
+    if spark.catalog.tableExists(TABLE_RULES):
+        live_names = {
+            r["name"] for r in spark.table(TABLE_RULES)
+            .filter(f"run_config_name = '{run_config_name}'").select("name").collect()
+        }
+    total = len(rules)
+    rules = filter_new_suggestions(rules, pending_keys, live_names)
+    if total != len(rules):
+        logger.info("Skipped %d duplicate/already-live suggestion(s)", total - len(rules))
+    if not rules:
+        logger.info("No new rules to write — staging table unchanged")
+        return 0
 
     now = datetime.now(tz=timezone.utc)
     rows = []

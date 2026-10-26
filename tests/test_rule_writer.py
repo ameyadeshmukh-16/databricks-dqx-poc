@@ -34,3 +34,39 @@ def test_unknown_function_passes_through():
     assert to_dqx_check("sql_expression", {"expression": "a > 1"}, "error") == (
         "sql_expression", {"expression": "a > 1"}, "error",
     )
+
+
+# ---------------------------------------------------------------------------
+# filter_new_suggestions
+# ---------------------------------------------------------------------------
+
+from ai_suggester.rule_writer import filter_new_suggestions, _suggestion_key
+
+
+def _rule(name, function="is_not_null", constraint=None):
+    return {"name": name, "function": function, "constraint": constraint or {}}
+
+
+def test_exact_pending_duplicate_is_dropped():
+    pending = {_suggestion_key("a_not_null", "is_not_null", '{}')}
+    assert filter_new_suggestions([_rule("a_not_null")], pending, set()) == []
+
+
+def test_same_name_different_constraint_is_kept():
+    pending = {_suggestion_key("q_max", "max_value", '{"max": 100}')}
+    rules = [_rule("q_max", "max_value", {"max": 200})]
+    assert filter_new_suggestions(rules, pending, set()) == rules
+
+
+def test_constraint_key_order_does_not_matter():
+    pending = {_suggestion_key("r", "f", '{"a": 1, "b": 2}')}
+    assert filter_new_suggestions([_rule("r", "f", {"b": 2, "a": 1})], pending, set()) == []
+
+
+def test_live_rule_name_is_dropped():
+    assert filter_new_suggestions([_rule("customer_id_not_null")], set(), {"customer_id_not_null"}) == []
+
+
+def test_duplicates_within_one_batch_are_collapsed():
+    rules = [_rule("x"), _rule("x"), _rule("y")]
+    assert [r["name"] for r in filter_new_suggestions(rules, set(), set())] == ["x", "y"]

@@ -19,6 +19,19 @@ _NUMERIC_TYPES = {
     "FloatType", "DoubleType", "DecimalType",
 }
 
+_INTEGRAL_TYPES = {"ByteType", "ShortType", "IntegerType", "LongType"}
+
+# Name tokens that mark an integer column as an identifier / categorical code
+# (e.g. division=11): range checks on these are meaningless.
+_CODE_NAME_TOKENS = {"id", "code", "division", "key", "zip", "sku", "number", "no"}
+
+
+def _is_code_like(col_name: str, dtype: str) -> bool:
+    """True for integer columns whose name says they hold a code/identifier."""
+    if dtype not in _INTEGRAL_TYPES:
+        return False
+    return any(tok in _CODE_NAME_TOKENS for tok in col_name.lower().split("_"))
+
 
 def suggest_statistical_rules(profile: dict, run_config_name: str) -> list[dict]:
     """
@@ -84,7 +97,8 @@ def suggest_statistical_rules(profile: dict, run_config_name: str) -> list[dict]
                 })
 
         # --- Rule 3: min_value (numeric columns that are always positive) ---
-        if is_numeric:
+        # Code-like integers (division, store_no, ...) are categorical: skip ranges.
+        if is_numeric and not _is_code_like(col_name, dtype):
             col_min = stats.get("min")
             col_max = stats.get("max")
 
