@@ -519,7 +519,7 @@ def s07_ai_vision():
 # ═══════════════════════════════════════════════════════════════════════════
 def s08_poc_overview():
     sl = prs.slides.add_slide(BLANK)
-    slide_title(sl, "POC Overview — Five Working Phases")
+    slide_title(sl, "POC Overview — Five Phases plus Stage A")
 
     headers = ["#", "Phase", "What It Does", "Status"]
     rows = [
@@ -528,17 +528,19 @@ def s08_poc_overview():
         ["3", "AI Rule Suggester",           "LLM analyses data profile and generates DQ rules",            "✅ Complete"],
         ["4", "Quarantine Analyzer",         "Surfaces patterns in bad records, root-cause insights",        "✅ Complete"],
         ["5", "Rule Effectiveness Dashboard","Tracks which rules fire, trends, zero-fire candidates",        "✅ Complete"],
+        ["A", "Automated Alerting",          "Flags violation-rate spikes vs. each rule's own baseline; audit log", "✅ Built — Slack pending"],
     ]
     table_slide(sl, headers, rows,
                 Inches(0.5), Inches(1.65), Inches(12.3),
                 col_widths=[Inches(0.5), Inches(2.6), Inches(6.6), Inches(2.6)],
                 hdr_size=14, row_size=13)
 
-    bg = rect(sl, Inches(0.5), Inches(5.55), Inches(12.3), Inches(1.4), LIGHT_GREY)
-    rect(sl, Inches(0.5), Inches(5.55), Pt(5), Inches(1.4), RED_ACCENT)
-    txb(sl, "All five phases are built, integrated, and running on Databricks. The POC uses generated "
-            "retail data (sales transactions + event streams) designed to mirror real-world data patterns at scale.",
-        Inches(0.75), Inches(5.65), Inches(11.9), Inches(1.2),
+    bg = rect(sl, Inches(0.5), Inches(5.55), Inches(12.3), Inches(1.15), LIGHT_GREY)
+    rect(sl, Inches(0.5), Inches(5.55), Pt(5), Inches(1.15), RED_ACCENT)
+    txb(sl, "All five phases and Stage A alerting are built and running on Databricks; the batch DAG and the "
+            "streaming pipeline have been run end to end. The POC uses generated retail data (sales transactions "
+            "+ event streams) designed to mirror real-world data patterns at scale.",
+        Inches(0.75), Inches(5.62), Inches(11.9), Inches(1.0),
         size=14, italic=True, color=DARK_GREY)
 
 
@@ -787,7 +789,8 @@ def s14_stat_rules():
         "                       'function': 'is_not_null', 'confidence': 1.0 - null_pct, ...})\n"
         "\n"
         "    # Rule: min_value — if all observed values are strictly positive\n"
-        "    if is_numeric and col_min is not None and col_min > 0:\n"
+        "    # (skipped for code-like integers such as division / *_id)\n"
+        "    if is_numeric and not _is_code_like(col_name, dtype) and col_min > 0:\n"
         "        rules.append({'name': f'{col_name}_min_value',\n"
         "                       'function': 'min_value', 'constraint': {'min': 0}, ...})\n"
         "\n"
@@ -830,14 +833,17 @@ def s15_human_review():
         ") USING DELTA\n"
         "\n"
         "# Engineer calls:\n"
-        "approve_rule(rule_id, spark)   # inserts into dq_rules_registry\n"
-        "reject_rule(rule_id, spark)    # marks status='rejected', preserved for fine-tuning"
+        "promote_rule(rule_id, reviewed_by, spark)  # DQX-native names -> dq_rules_registry\n"
+        "reject_rule(rule_id, reviewed_by, spark)   # status='rejected', kept for fine-tuning\n"
+        "\n"
+        "# On write: duplicates and names of live rules are skipped"
     )
     code_block(sl, code, Inches(0.5), Inches(2.1), Inches(12.3), Inches(4.6), size=10.5)
 
-    txb(sl, "Full audit trail: rule_id · suggested_at · reviewed_at · reviewed_by · llm_backend",
-        Inches(0.5), Inches(6.85), Inches(12.3), Inches(0.4),
-        size=14, bold=True, color=DARK_BLUE)
+    txb(sl, "Audit trail: rule_id · suggested_at · reviewed_by · llm_backend   |   "
+            "Duplicates skipped on write · DQX names applied on promotion",
+        Inches(0.5), Inches(6.8), Inches(12.3), Inches(0.6),
+        size=13, bold=True, color=DARK_BLUE)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1136,25 +1142,28 @@ def s22_jobs():
     sl = prs.slides.add_slide(BLANK)
     slide_title(sl, "Databricks Jobs — Operational View")
 
-    headers = ["Job Name", "Trigger", "Notebook / Script"]
+    headers = ["Job Name", "Trigger", "Tasks"]
     rows = [
-        ["[RTM] Setup Delta Tables",          "Once (infra)",         "notebooks/setup_delta_tables.py"],
-        ["[RTM] Batch DQX Validation",        "Scheduled / on-demand","notebooks/batch_dqx_validation.py"],
-        ["[RTM] Kafka Stream DQX Validation", "Continuous",           "notebooks/kafka_stream_dqx_validation.py"],
-        ["[RTM] AI Rule Suggester",           "On-demand",            "notebooks/ai_rule_suggester.py"],
-        ["[RTM] Quarantine Analyzer",         "On-demand / scheduled","notebooks/quarantine_analyzer.py"],
-        ["[RTM] Rule Effectiveness Report",   "On-demand / scheduled","notebooks/rule_effectiveness_report.py"],
+        ["[RTM] Seed Rules Registry",         "Once per environment",
+         "seed_rules — loads configs/rules_*.yml into dq_rules_registry"],
+        ["[RTM] Batch DQX Pipeline",          "On-demand / scheduled",
+         "6-task DAG: stage → validate → suggest ∥ analyze → report → alerts"],
+        ["[RTM] Kafka Streaming Pipeline",    "Continuous (runs until cancelled)",
+         "stream_and_validate + produce_events, started together; readiness handshake"],
+        ["[RTM] DQ Alert Check (Streaming)",  "Every 15 minutes",
+         "check_alerts — spike detection on streaming rules"],
     ]
     table_slide(sl, headers, rows,
                 Inches(0.5), Inches(1.65), Inches(12.3),
-                col_widths=[Inches(4.2), Inches(2.8), Inches(5.3)],
-                hdr_size=14, row_size=13)
+                col_widths=[Inches(3.5), Inches(3.0), Inches(5.8)],
+                hdr_size=14, row_size=12)
 
-    bg = rect(sl, Inches(0.5), Inches(5.45), Inches(12.3), Inches(1.0), LIGHT_GREY)
-    rect(sl, Inches(0.5), Inches(5.45), Pt(5), Inches(1.0), RED_ACCENT)
-    txb(sl, "All jobs defined in databricks.yml as a Databricks Asset Bundle — infrastructure as code, "
-            "deployable across dev / staging / prod with a single CLI command: databricks bundle deploy",
-        Inches(0.75), Inches(5.55), Inches(11.9), Inches(0.85),
+    bg = rect(sl, Inches(0.5), Inches(5.45), Inches(12.3), Inches(1.5), LIGHT_GREY)
+    rect(sl, Inches(0.5), Inches(5.45), Pt(5), Inches(1.5), RED_ACCENT)
+    txb(sl, "Six manually triggered jobs were chained into four orchestrated ones. All are defined in "
+            "databricks.yml as a Databricks Asset Bundle, including the cluster libraries "
+            "(pipeline_libraries), so a new environment needs no manual setup: databricks bundle deploy",
+        Inches(0.75), Inches(5.55), Inches(11.9), Inches(1.3),
         size=14, italic=True, color=DARK_GREY)
 
 
@@ -1169,10 +1178,10 @@ def s23_poc_vs_prod():
     rows = [
         ["Data",       "Generated synthetic retail data",   "Real transaction / event feeds from source systems"],
         ["Scale",      "Thousands of records",              "Billions of records — Spark scales horizontally, no code changes"],
-        ["Rules",      "~15 seeded + AI-suggested",         "Hundreds of rules across dozens of datasets"],
+        ["Rules",      "12 seeded + AI-suggested", "Hundreds of rules across dozens of datasets"],
         ["Streaming",  "Single Kafka topic",                "Multiple topics, partitioned, multi-tenant"],
         ["LLM Cost",   "Low (POC usage)",                   "Prompt caching implemented; cost monitoring needed"],
-        ["Security",   "Databricks Secrets",                "Enterprise key vault (Azure Key Vault / HashiCorp)"],
+        ["Security",   "Secret scope backed by Azure Key Vault", "Managed identities, rotation policies, per-environment vaults"],
         ["Governance", "Unity Catalog in place",            "Column-level access controls + data lineage"],
         ["Monitoring", "Rule metrics Delta table",           "Connect to Datadog / Grafana / Azure Monitor"],
     ]
@@ -1200,7 +1209,7 @@ def s24_outcomes():
     outcomes = [
         ("1.  AI can write meaningful DQ rules from data alone",
          "The LLM produced structurally valid, business-relevant rules from a column profile — no domain hints given. "
-         "Rules were immediately executable by DQX with zero manual editing."),
+         "A built-in translation maps them to DQX-native names on promotion, so approved rules run without manual editing."),
         ("2.  The human-in-the-loop governance model works",
          "Staging → review → registry promotion gives engineers full control. "
          "Approve/reject audit trail preserved for future model fine-tuning."),
@@ -1221,7 +1230,7 @@ def s24_outcomes():
             size=14, bold=True, color=DARK_BLUE)
         txb(sl, body, Inches(0.9), y + Inches(0.33), Inches(11.8), Inches(0.35),
             size=13, color=DARK_GREY)
-        y += Inches(0.82)
+        y += Inches(0.92)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1230,31 +1239,35 @@ def s24_outcomes():
 def s25_tests():
     sl = prs.slides.add_slide(BLANK)
     slide_title(sl, "Test Coverage and Code Quality")
-    txb(sl, "48 unit tests across 4 files — all passing locally, no Spark cluster required:",
+    txb(sl, "105 unit tests across 9 files — 95 run without Spark; the 10 profiler tests need a local Spark session:",
         Inches(0.6), Inches(1.6), Inches(12.0), Inches(0.38), size=15, bold=True, color=DARK_BLUE)
 
     headers = ["Test File", "Tests", "What Is Covered"]
     rows = [
-        ["tests/test_profiler.py",       "12", "Column statistics, null detection, distribution analysis"],
-        ["tests/test_rule_generator.py", "18", "Prompt construction, JSON parse, rule validation"],
-        ["tests/test_rule_metrics.py",   "9",  "Metrics dict building, violation % calc, write path"],
-        ["tests/test_rule_writer.py",    "9",  "Staging insert, approve/reject lifecycle, registry promotion"],
+        ["tests/test_profiler.py",            "10", "Column statistics, null detection, distinct values (local Spark)"],
+        ["tests/test_rule_generator.py",      "25", "Statistical rules, code-column skipping, ceiling rounding"],
+        ["tests/test_rule_writer.py",         "11", "DQX-name translation on promotion, duplicate filtering"],
+        ["tests/test_rule_seed.py",           "7",  "YAML → DQX-native check conversion for every rule type"],
+        ["tests/test_quarantine_analyzer.py", "14", "Prompt construction, JSON parsing, rule validation"],
+        ["tests/test_rule_metrics.py",        "9",  "Metrics building, violation % calculation, write path"],
+        ["tests/test_alerting.py",            "11", "Spike detection, Slack payload and delivery, orchestration"],
+        ["tests/test_config.py",              "9",  "Settings loading and required-field validation"],
+        ["tests/test_event_generator.py",     "9",  "Event schema and bad-data injection rates"],
     ]
     table_slide(sl, headers, rows,
-                Inches(0.5), Inches(2.1), Inches(12.3),
-                col_widths=[Inches(4.2), Inches(1.1), Inches(7.0)],
-                hdr_size=14, row_size=13)
+                Inches(0.5), Inches(2.05), Inches(12.3),
+                col_widths=[Inches(4.2), Inches(1.0), Inches(7.1)],
+                hdr_size=11, row_size=10.5)
 
-    code = "$ pytest tests/ -v\n...\n48 passed in 3.21s"
-    code_block(sl, code, Inches(0.5), Inches(3.9), Inches(5.0), Inches(1.2), size=13)
+    code = "$ pytest tests/\n...\n95 passed (10 Spark-only tests deselected)"
+    code_block(sl, code, Inches(0.5), Inches(6.1), Inches(5.6), Inches(1.0), size=12)
 
-    txb(sl, "Design principle:", Inches(6.2), Inches(3.9), Inches(6.6), Inches(0.38),
+    txb(sl, "Design principle:", Inches(6.4), Inches(6.05), Inches(6.4), Inches(0.38),
         size=14, bold=True, color=DARK_BLUE)
-    txb(sl, "Pure-Python business logic is extracted from Spark-dependent code, enabling "
-            "fast offline tests without a running cluster. Spark interactions are mocked at "
-            "the boundary using unittest.mock.",
-        Inches(6.2), Inches(4.32), Inches(6.6), Inches(1.4),
-        size=13, color=DARK_GREY)
+    txb(sl, "Pure-Python business logic is separated from Spark code, so most tests run offline "
+            "without a cluster. Spark calls are mocked at the boundary.",
+        Inches(6.4), Inches(6.42), Inches(6.4), Inches(0.85),
+        size=12, color=DARK_GREY)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1266,7 +1279,7 @@ def s26_roadmap():
 
     headers = ["Priority", "Opportunity", "AI Infusion Point", "Business Value"]
     rows = [
-        ["A ★", "Automated Alerting",       "AI classifies violation severity → routes alert",         "On-call team notified only when it matters"],
+        ["A ✅", "Automated Alerting",       "Built: spike detection + log + Slack. Next: AI severity", "On-call team notified only when it matters"],
         ["B",   "Data Drift Detection",     "ML detects statistical distribution shift run-over-run",   "Catch silent degradation before rules fail"],
         ["C",   "DQ Scorecard",             "Aggregate quality scores per domain / table over time",    "Executive visibility into data health by area"],
         ["D",   "Rule Governance Workflow", "AI suggests rule retirement based on effectiveness data",  "Fully automated rule lifecycle management"],
@@ -1279,8 +1292,9 @@ def s26_roadmap():
 
     bg = rect(sl, Inches(0.4), Inches(5.55), Inches(12.5), Inches(0.85), LIGHT_GREY)
     rect(sl, Inches(0.4), Inches(5.55), Pt(5), Inches(0.85), RED_ACCENT)
-    txb(sl, "Recommended next step: A (Alerting) — highest immediate business value, lowest lift. "
-            "Wires the existing dq_rule_metrics table to a notification layer. No new ML needed.",
+    txb(sl, "Stage A is delivered: spike detection and the audit log are verified on Databricks; Slack "
+            "delivery is ready once the webhook secret is configured. Next: choose among B–E, and add AI "
+            "severity and plain-English explanations to A.",
         Inches(0.65), Inches(5.62), Inches(12.1), Inches(0.75),
         size=14, italic=True, color=DARK_GREY)
 
@@ -1290,26 +1304,26 @@ def s26_roadmap():
 # ═══════════════════════════════════════════════════════════════════════════
 def s27_alerting():
     sl = prs.slides.add_slide(BLANK)
-    slide_title(sl, "Opportunity A — Automated Alerting")
+    slide_title(sl, "Stage A — Automated Alerting (Delivered)")
 
     code = (
         "  dq_rule_metrics (populated after every batch / stream run)\n"
         "           │\n"
         "           ▼\n"
-        "  Alert Evaluation Engine\n"
+        "  Alert check job (dq_alert_check.py)\n"
         "  ┌──────────────────────────────────────────────────────┐\n"
-        "  │  if violation_pct > threshold for rule X             │\n"
-        "  │  → classify severity (info / warning / critical)     │\n"
-        "  │  → deduplicate (don't re-alert same issue twice)     │\n"
-        "  │  → route to appropriate channel                      │\n"
+        "  │  baseline = avg violation_pct of the last N runs     │\n"
+        "  │  spike if last run > max(2.5 × baseline, 5%)         │\n"
+        "  │  needs at least 3 prior runs for the rule            │\n"
+        "  │  never re-alert the same rule + run                  │\n"
         "  └──────────────────────────────────────────────────────┘\n"
-        "           ├──► Slack / Teams notification\n"
-        "           ├──► PagerDuty / OpsGenie (critical only)\n"
-        "           └──► dq_alerts table (full audit log)"
+        "           ├──► Slack webhook notification\n"
+        "           ├──► dq_alert_log table (full audit trail)\n"
+        "           └──► native Databricks SQL Alert (alternative path)"
     )
     code_block(sl, code, Inches(0.5), Inches(1.65), Inches(7.2), Inches(4.0), size=11.5)
 
-    txb(sl, "AI infusion in the alert message:", Inches(7.9), Inches(1.65), Inches(5.0), Inches(0.38),
+    txb(sl, "Next: AI infusion in the alert message", Inches(7.9), Inches(1.65), Inches(5.0), Inches(0.38),
         size=14, bold=True, color=DARK_BLUE)
     txb(sl, "Not just:",
         Inches(7.9), Inches(2.1), Inches(5.0), Inches(0.35), size=13, color=DARK_GREY)
@@ -1322,8 +1336,9 @@ def s27_alerting():
 
     bg = rect(sl, Inches(0.5), Inches(5.85), Inches(12.3), Inches(0.85), LIGHT_GREY)
     rect(sl, Inches(0.5), Inches(5.85), Pt(5), Inches(0.85), RED_ACCENT)
-    txb(sl, "Existing infrastructure (dq_rule_metrics, LLM backend) is already in place. "
-            "Alerting is an orchestration layer on top — estimated 1 sprint to ship.",
+    txb(sl, "Spike detection and logging are verified end to end on Databricks; Slack delivery is ready "
+            "once the webhook secret is configured. The LLM backend is already in place for the "
+            "severity and explanation step.",
         Inches(0.75), Inches(5.93), Inches(11.9), Inches(0.75),
         size=14, italic=True, color=DARK_GREY)
 
@@ -1352,6 +1367,7 @@ def s28_vision_realised():
         "✅  Quarantine records analysed",
         "✅  Rule effectiveness tracked",
         "✅  Human governance layer",
+        "✅  Spike alerting with audit log",
     ]
     bullet_list(sl, today_items, Inches(0.55), col_y + Inches(0.7), col_w - Inches(0.2),
                 Inches(4.0), size=15, space=16, color=RGBColor(0x0D, 0x52, 0x2A), bullet_char="")
@@ -1401,7 +1417,7 @@ def s29_ask():
     items = [
         "Does the human-in-the-loop governance model align with enterprise AI adoption standards?",
         "Is the pluggable LLM backend pattern the right approach for multi-cloud / multi-provider deployments?",
-        "Which next-stage opportunity (Alerting / Drift / Scorecard) aligns best with delivery priorities?",
+        "Which next-stage opportunity (Drift / Scorecard / Governance) aligns best with delivery priorities?",
         "What production integration patterns (source systems, security, monitoring) should shape the next phase?",
     ]
     bullet_list(sl, items, Inches(0.7), Inches(2.1), Inches(12.0), Inches(2.8), size=17, space=14)
@@ -1431,7 +1447,7 @@ def s30_thankyou():
     txb(sl, "Databricks DQX POC  —  AI Infusion in Delivery",
         Inches(1), Inches(4.7), Inches(11.33), Inches(0.5),
         size=16, color=WHITE, align=PP_ALIGN.CENTER)
-    txb(sl, "5 phases complete  ·  48 unit tests passing  ·  Production-grade architecture  ·  Ready for next phase",
+    txb(sl, "5 phases + alerting complete  ·  105 unit tests  ·  Production-grade architecture  ·  Ready for next phase",
         Inches(1), Inches(5.2), Inches(11.33), Inches(0.5),
         size=13, color=MED_GREY, align=PP_ALIGN.CENTER)
 
@@ -1476,6 +1492,7 @@ s28_vision_realised()
 s29_ask()
 s30_thankyou()
 
-out = "/home/user/databricks-dqx-poc/AI_Infusion_Delivery_Assessment.pptx"
+import os
+out = os.path.join(os.path.dirname(os.path.abspath(__file__)), "AI_Infusion_Delivery_Assessment.pptx")
 prs.save(out)
 print(f"Saved: {out}  ({prs.slides.__len__()} slides)")
