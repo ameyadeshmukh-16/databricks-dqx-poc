@@ -48,6 +48,16 @@ resources:
               - "--interval_seconds=5"
           existing_cluster_id: ${var.cluster_id}
 
+    rtm_seed_rules:
+      name: "[RTM] Seed Rules Registry"
+      tasks:
+        - task_key: seed_rules
+          spark_python_task:
+            python_file: ./notebooks/seed_rules_registry.py
+            parameters:
+              - "--force=false"
+          existing_cluster_id: ${var.cluster_id}
+
     rtm_batch_pipeline:
       name: "[RTM] Batch DQX Pipeline"
       tasks:
