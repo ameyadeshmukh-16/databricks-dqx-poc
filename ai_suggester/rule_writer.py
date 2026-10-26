@@ -14,6 +14,31 @@ from src.logger import get_logger
 
 logger = get_logger(__name__)
 
+
+# Suggester vocabulary (staging) -> DQX-native check functions / arguments.
+_DQX_FUNCTIONS = {
+    "min_value":     ("is_not_less_than",    {"min": "limit"}),
+    "max_value":     ("is_not_greater_than", {"max": "limit"}),
+    "matches_regex": ("regex_match",         {}),
+}
+_DQX_CRITICALITY = {"warning": "warn"}
+
+
+def to_dqx_check(function: str, constraint: dict, criticality: str) -> tuple[str, dict, str]:
+    """
+    Translate a staged suggestion into the names and argument encoding DQX
+    expects when it loads checks from the registry table.
+
+    Arguments are stored as map<string,string>; DQX JSON-decodes each value,
+    so lists must be JSON (not Python repr) to come back as lists.
+    """
+    dqx_function, arg_renames = _DQX_FUNCTIONS.get(function, (function, {}))
+    arguments = {
+        arg_renames.get(k, k): v if isinstance(v, str) else json.dumps(v)
+        for k, v in constraint.items()
+    }
+    return dqx_function, arguments, _DQX_CRITICALITY.get(criticality, criticality)
+
 _STAGING_DDL = f"""
 CREATE TABLE IF NOT EXISTS {TABLE_RULES_STAGING} (
     rule_id          STRING,
@@ -151,13 +176,17 @@ def promote_rule(rule_id: str, reviewed_by: str, spark) -> None:
         [row["column_name"]] if row["column_name"] else []
     )
 
+    dqx_function, dqx_arguments, dqx_criticality = to_dqx_check(
+        row["function"], constraint_obj, row["criticality"],
+    )
+
     registry_row = {
         "name":                 row["name"],
-        "criticality":          row["criticality"],
+        "criticality":          dqx_criticality,
         "check": {
-            "function":         row["function"],
+            "function":         dqx_function,
             "for_each_column":  for_each_col,
-            "arguments":        {k: str(v) for k, v in constraint_obj.items()},
+            "arguments":        dqx_arguments,
         },
         "filter":               None,
         "run_config_name":      row["run_config_name"],
