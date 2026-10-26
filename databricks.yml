@@ -8,6 +8,24 @@ variables:
   cluster_id:
     description: "Databricks cluster ID to run jobs on"
     default: "1026-013008-6rqlr2d7"
+  pipeline_libraries:
+    description: "PyPI libraries installed on the cluster for every task"
+    type: complex
+    default:
+      - pypi:
+          package: databricks-labs-dqx>=0.5.0
+      - pypi:
+          package: pyyaml>=6.0.0
+      - pypi:
+          package: python-dotenv>=1.0.0
+      - pypi:
+          package: confluent-kafka>=2.3.0
+      - pypi:
+          package: azure-storage-file-datalake>=12.14.0
+      - pypi:
+          package: anthropic>=0.25.0
+      - pypi:
+          package: openai>=1.0.0
 
 targets:
   dev:
@@ -31,6 +49,7 @@ resources:
           spark_python_task:
             python_file: ./notebooks/kafka_stream_dqx_validation.py
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
           timeout_seconds: 0    # run indefinitely until stopped
 
         - task_key: produce_events
@@ -47,6 +66,7 @@ resources:
               - "--batch_size=10"
               - "--interval_seconds=5"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
 
     rtm_seed_rules:
       name: "[RTM] Seed Rules Registry"
@@ -57,6 +77,7 @@ resources:
             parameters:
               - "--force=false"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
 
     rtm_batch_pipeline:
       name: "[RTM] Batch DQX Pipeline"
@@ -68,6 +89,7 @@ resources:
               - "--csv_path=abfss://databricks-dqx@databricksdqxpocstorage.dfs.core.windows.net/sales_transactions.csv"
               - "--database=retail_dqx_poc"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
 
         - task_key: validate_data
           depends_on:
@@ -77,6 +99,7 @@ resources:
             parameters:
               - "--database=retail_dqx_poc"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
 
         - task_key: suggest_rules
           depends_on:
@@ -89,6 +112,7 @@ resources:
               context_description: "Retail POS sales transactions from brick-and-mortar stores"
               llm_backend: "openrouter"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
 
         - task_key: analyze_quarantine
           depends_on:
@@ -102,6 +126,7 @@ resources:
               llm_backend: "openrouter"
               top_n: "20"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
 
         - task_key: run_report
           depends_on:
@@ -113,6 +138,7 @@ resources:
               run_config_name: "sales_batch_rules"
               lookback_runs: "10"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
 
         - task_key: check_alerts
           depends_on:
@@ -124,6 +150,7 @@ resources:
               lookback_runs: "10"
               secret_scope: "dqx-poc"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
 
     dq_alert_check_streaming:
       name: "[RTM] DQ Alert Check (Streaming)"
@@ -136,6 +163,7 @@ resources:
               lookback_runs: "10"
               secret_scope: "dqx-poc"
           existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
       schedule:
         quartz_cron_expression: "0 */15 * * * ?"
         timezone_id: "UTC"
