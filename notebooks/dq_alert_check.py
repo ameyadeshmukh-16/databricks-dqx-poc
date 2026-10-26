@@ -38,7 +38,11 @@ print(f"Secret scope  : {secret_scope}")
 import sys
 import os
 
-sys.path.insert(0, "/Workspace/Repos/" + os.environ.get("USER", "") + "/databricks-dqx-poc")
+# Repo root on sys.path: derive it from this notebook's own workspace path
+# (works for bundle deployments under .../files/ as well as Repos / Git folders).
+_nb_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+_repo_root = os.path.dirname(os.path.dirname("/Workspace" + _nb_path))
+sys.path.insert(0, _repo_root)
 
 from databricks.connect import DatabricksSession
 

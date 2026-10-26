@@ -28,6 +28,14 @@ from pyspark.sql.functions import col, expr, size
 from databricks.connect import DatabricksSession
 
 # -----------------------------------
+# Repo root on sys.path (bundle deploys scripts under .../files/notebooks/)
+# -----------------------------------
+import inspect as _inspect, os as _os, sys as _sys
+_repo_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(_inspect.currentframe().f_code.co_filename)))
+if _repo_root not in _sys.path:
+    _sys.path.insert(0, _repo_root)
+
+# -----------------------------------
 # Logging
 # -----------------------------------
 from src.logger import get_logger
