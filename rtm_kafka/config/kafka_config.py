@@ -58,8 +58,10 @@ KAFKA_PRODUCER_CONFIG = {
 # Spark Consumer Options (.format("kafka"))
 # -----------------------------------
 # JAAS config is the Spark/JVM equivalent of the SASL credentials above.
+# Databricks Runtime ships a shaded Kafka client, so the login module needs the
+# kafkashaded. prefix (the unshaded name is not found on current runtimes).
 _JAAS_CONFIG = (
-    "org.apache.kafka.common.security.plain.PlainLoginModule required "
+    "kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule required "
     'username="$ConnectionString" '
     f'password="{_settings.eventhub_conn_str}";'
 )

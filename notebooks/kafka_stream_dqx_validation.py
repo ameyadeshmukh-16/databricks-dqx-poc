@@ -385,11 +385,16 @@ logger.info("Readiness signal written to %s", TABLE_STREAM_READY)
 # display() on a streaming Delta source auto-refreshes in the Databricks notebook
 # output pane every time a new batch writes to stream_batch_metrics.
 # In interactive mode this shows a live table; in job mode it is a no-op.
-display(
-    spark.readStream
-        .format("delta")
-        .table(TABLE_BATCH_METRICS)
-)
+# Some workspaces reject display() on a streaming DataFrame (implicit temp
+# checkpoint not supported); the monitor is optional, so never let it kill the stream.
+try:
+    display(
+        spark.readStream
+            .format("delta")
+            .table(TABLE_BATCH_METRICS)
+    )
+except Exception as exc:  # noqa: BLE001
+    logger.warning("Live batch monitor unavailable, continuing without it: %s", str(exc).splitlines()[0])
 
 # -----------------------------------
 # Keep Job Alive
