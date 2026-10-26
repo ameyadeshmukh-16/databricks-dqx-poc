@@ -28,6 +28,8 @@ if _repo_root not in sys.path:
     sys.path.insert(0, _repo_root)
 
 from config.constants import (
+    CATALOG,
+    DATABASE,
     TABLE_RULES,
     BATCH_RULE_CONFIG_NAME,
     STREAMING_RULE_CONFIG_NAME,
@@ -48,6 +50,9 @@ force = any(a.lower() == "--force=true" for a in sys.argv[1:])
 # -----------------------------------
 spark = SparkSession.builder.getOrCreate()
 dqx = DQEngine(WorkspaceClient())
+
+# The registry may be the first thing created in a fresh catalog
+spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{DATABASE}")
 
 RULE_SETS = {
     BATCH_RULE_CONFIG_NAME:     os.path.join(_repo_root, "configs", "rules_batch.yml"),
