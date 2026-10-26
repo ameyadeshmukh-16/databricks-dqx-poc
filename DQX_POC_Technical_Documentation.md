@@ -24,6 +24,7 @@
 14. [Test Coverage](#14-test-coverage)
 15. [Environment Variables Reference](#15-environment-variables-reference)
 16. [Databricks Jobs Reference](#16-databricks-jobs-reference)
+17. [Deployment & Troubleshooting](#17-deployment--troubleshooting)
 
 ---
 
@@ -38,7 +39,8 @@ databricks-dqx-poc/
 │   └── settings.py           ← Settings dataclass loaded from env vars
 │
 ├── src/
-│   └── logger.py             ← Structured logging (replaces print() everywhere)
+│   ├── logger.py             ← Structured logging (replaces print() everywhere)
+│   └── rule_seed.py          ← YAML rule sets → DQX-native checks (used by the seed job)
 │
 ├── rtm_kafka/
 │   ├── config/
@@ -59,6 +61,7 @@ databricks-dqx-poc/
 │   └── alerting.py            ← detect_spikes() + Slack notification + dq_alert_log audit trail
 │
 ├── notebooks/
+│   ├── seed_rules_registry.py         ← Seed dq_rules_registry from configs/rules_*.yml
 │   ├── setup_delta_tables.py          ← Batch: load CSV → sales_staging
 │   ├── batch_dqx_validation.py        ← Batch: validate + split clean/quarantine
 │   ├── kafka_producer_job.py          ← Databricks Job: event producer
@@ -76,7 +79,9 @@ databricks-dqx-poc/
 ├── tests/
 │   ├── __init__.py
 │   ├── test_profiler.py            ← 10 tests (PySpark, local session)
-│   ├── test_rule_generator.py      ← 16 tests (pure Python)
+│   ├── test_rule_generator.py      ← 25 tests (pure Python)
+│   ├── test_rule_writer.py         ← 11 tests (pure Python)
+│   ├── test_rule_seed.py           ← 7 tests (pure Python)
 │   ├── test_quarantine_analyzer.py ← 14 tests (pure Python)
 │   ├── test_rule_metrics.py        ← 9 tests (pure Python)
 │   ├── test_alerting.py            ← 11 tests (pure Python)
@@ -84,9 +89,9 @@ databricks-dqx-poc/
 │   └── test_event_generator.py     ← 9 tests (pure Python)
 │
 ├── configs/
-│   ├── rules_batch.yml            ← Legacy YAML rule examples — NOT loaded by any
-│   └── rules_streaming.yml          current pipeline; live rules come from the
-│                                     dq_rules_registry Delta table (see §7.5)
+│   ├── rules_batch.yml            ← Source of truth for the seed rule sets: loaded into
+│   └── rules_streaming.yml          dq_rules_registry by the seed job (§5.3). Pipelines read
+│                                     rules from the registry table, not from these files
 │
 ├── databricks.yml                 ← Databricks Asset Bundle job definitions
 ├── requirements.txt               ← Pinned Python dependencies
@@ -334,13 +339,21 @@ logger.debug("...")   # suppressed at INFO level unless level changed
 
 ### 4.1 `databricks.yml` — Databricks Asset Bundle
 
-Defines 3 Databricks Jobs deployable via `databricks bundle deploy --target dev`. What were originally 6 independent, manually-triggered jobs have been chained into 3 orchestrated flows (see commits `b9510e8`, `1d1c878`) — the batch stages now run as a single 6-task DAG, and the two Kafka tasks run concurrently in one job using a readiness-signal handshake instead of Databricks' `depends_on` (which requires the upstream task to reach a terminal state — impossible for a `timeout_seconds: 0` streaming task).
+Defines 4 Databricks Jobs deployable via `databricks bundle deploy --target dev` (see [§17](#17-deployment--troubleshooting) for the full deploy procedure). What were originally 6 independent, manually-triggered jobs have been chained into 3 orchestrated flows (see commits `b9510e8`, `1d1c878`) — the batch stages now run as a single 6-task DAG, and the two Kafka tasks run concurrently in one job using a readiness-signal handshake instead of Databricks' `depends_on` (which requires the upstream task to reach a terminal state — impossible for a `timeout_seconds: 0` streaming task).
 
 ```
 Target: dev
-Workspace: https://adb-7405619883480512.12.azuredatabricks.net
-Cluster ID: 0601-042329-nm42bg1s
+Workspace: https://adb-7405615968854762.2.azuredatabricks.net
+Cluster ID: 1026-013008-6rqlr2d7   (bundle variable `cluster_id`)
+Catalog:    dqx_poc_dev            (config/constants.py -> CATALOG)
 ```
+
+**Bundle variables:**
+
+| Variable | Purpose |
+|---|---|
+| `cluster_id` | Existing all-purpose cluster every task runs on (`existing_cluster_id`) |
+| `pipeline_libraries` | `complex` variable listing the PyPI packages installed on the cluster for **every** task: `databricks-labs-dqx`, `pyyaml`, `python-dotenv`, `confluent-kafka`, `azure-storage-file-datalake`, `anthropic`, `openai`. A new cluster needs no manual library installs. |
 
 **Job inventory:**
 
@@ -348,6 +361,7 @@ Cluster ID: 0601-042329-nm42bg1s
 |---|---|---|---|
 | `rtm_kafka_streaming` | [RTM] Kafka Streaming Pipeline | `stream_and_validate` (`kafka_stream_dqx_validation.py`, `timeout_seconds: 0`) + `produce_events` (`kafka_producer_job.py`) | Both tasks start concurrently, no `depends_on`; producer polls a `stream_consumer_ready` signal before sending events |
 | `rtm_batch_pipeline` | [RTM] Batch DQX Pipeline | `stage_data` → `validate_data` → `{suggest_rules, analyze_quarantine}` → `run_report` → `check_alerts` | 6-task DAG; `suggest_rules` and `analyze_quarantine` run in parallel off `validate_data`, `run_report` waits on both, `check_alerts` runs last |
+| `rtm_seed_rules` | [RTM] Seed Rules Registry | `seed_rules` (`seed_rules_registry.py`) | Manual. Loads `configs/rules_*.yml` into `dq_rules_registry`; skips rule sets that already have rows unless run with `--force=true` (see [§5.3](#53-notebooksseed_rules_registrypy)). Run once on a fresh catalog, **before** the batch pipeline |
 | `dq_alert_check_streaming` | [RTM] DQ Alert Check (Streaming) | `check_alerts` (`dq_alert_check.py`, `run_config_name=streaming_event_rules`) | Cron-scheduled every 15 minutes (`0 */15 * * * ?` UTC) — the batch DAG's `check_alerts` task only covers batch rules, so streaming rules need this separate scheduled check |
 
 See [§16 Databricks Jobs Reference](#16-databricks-jobs-reference) for full task parameters.
@@ -437,6 +451,37 @@ from config.constants import TABLE_RULES, TABLE_STAGING, TABLE_SALES_CLEAN,
 
 ---
 
+### 5.3 `notebooks/seed_rules_registry.py`
+
+**Purpose:** Repeatable, environment-independent way to populate `dq_rules_registry` from the YAML rule sets in `configs/`. Without it a fresh catalog has no rules and `validate_data` fails.
+
+**Flow:**
+```
+for each rule set (sales_batch_rules <- configs/rules_batch.yml,
+                   streaming_event_rules <- configs/rules_streaming.yml):
+    if registry already has rows for run_config_name and not --force: skip
+    checks = src.rule_seed.yaml_rules_to_dqx_checks(yaml)      # DQX-native names
+    DQEngine.validate_checks(checks)                           # raises on any invalid check
+    DQEngine.save_checks(checks, TableChecksStorageConfig(..., mode="overwrite"))
+```
+
+**YAML -> DQX translation (`src/rule_seed.py`):**
+
+| YAML `type` | DQX function | Argument mapping |
+|---|---|---|
+| `is_not_null` | `is_not_null` | - |
+| `is_in_list` | `is_in_list` | `allowed_values` -> `allowed` |
+| `min_value` | `is_not_less_than` | `min` -> `limit` |
+| `max_value` | `is_not_greater_than` | `max` -> `limit` |
+| `matches_regex` | `regex_match` | `regex` |
+| `custom_sql` | `sql_expression` | `sql_expression` -> `expression`; **no** `for_each_column` (DQX rejects an empty list) |
+
+Criticality `warning` is written as `warn` - DQX accepts only `warn` or `error`.
+
+**Safety:** the default (skip when rows exist) means rules promoted from the AI suggester are never overwritten. `--force=true` replaces a rule set entirely from the YAML. Parameters arrive as `sys.argv` because the job is a `spark_python_task`.
+
+---
+
 ## 6. Phase 2 — Streaming Pipeline
 
 ### 6.1 `rtm_kafka/config/kafka_config.py`
@@ -470,11 +515,13 @@ from config.constants import TABLE_RULES, TABLE_STAGING, TABLE_SALES_CLEAN,
     "subscribe":               "retail-pos-stream",
     "kafka.security.protocol": "SASL_SSL",
     "kafka.sasl.mechanism":    "PLAIN",
-    "kafka.sasl.jaas.config":  "org.apache.kafka.common.security.plain.PlainLoginModule ...",
+    "kafka.sasl.jaas.config":  "kafkashaded.org.apache.kafka.common.security.plain.PlainLoginModule ...",
     "kafka.group.id":          "databricks-dqx-kafka-consumer",
     "startingOffsets":         "latest",
 }
 ```
+
+**Shaded login module:** Databricks Runtime ships a *shaded* Kafka client, so the JAAS login module must carry the `kafkashaded.` prefix. With the plain `org.apache.kafka...` name the stream fails at start with `Failed to create new KafkaAdminClient` and no useful root cause.
 
 **Why confluent-kafka and not kafka-python?**
 `kafka-python`'s `KafkaProducer` is lazy — connection happens on first `.send()`, where it attempts Kafka API version auto-detection. Azure Event Hubs does not respond to this probe correctly, causing a 60-second `KafkaTimeoutError`. `confluent-kafka` (the Microsoft-recommended client) connects on instantiation with a proper handshake.
@@ -578,6 +625,8 @@ StructType([
 ])
 ```
 
+**Live monitor is optional:** after the stream starts the notebook calls `display()` on a streaming read of `stream_batch_metrics`. Some workspaces reject this (`TEMP_CHECKPOINT_LOCATION_NOT_SUPPORTED`), so the call is wrapped in `try/except` and only logs a warning - it must never terminate the stream. The consumer uses `startingOffsets=latest`, so events sent before it is listening are not read (the producer waits on the readiness signal to reduce this).
+
 **Important constraint — rule reload:** `dqx.load_checks()` is called once at consumer startup, not inside `process()`. Rules promoted to `dq_rules_registry` after the consumer starts will not be picked up until the consumer is restarted (checkpoint must also be cleared to avoid offset conflicts).
 
 ---
@@ -650,8 +699,12 @@ No Spark, no LLM — pure Python decision logic on the profile dict.
 |---|---|---|---|
 | `null_pct < STAT_NULL_THRESHOLD (0.01)` | `{col}_not_null` | `is_not_null` | `error` |
 | `distinct_values` present AND `distinct_count ≤ 50` AND `not is_numeric` AND `(1 - null_pct) ≥ 0.95` | `{col}_valid_values` | `sql_expression` | `warning` |
-| `is_numeric` AND `col_min > 0` | `{col}_min_value` | `min_value` with `min=0` | `error` |
-| `is_numeric` AND `col_max > 0` | `{col}_max_value` | `max_value` with `max=_round_up_ceiling(col_max)` | `warning` |
+| `is_numeric` AND not `_is_code_like` AND `col_min > 0` | `{col}_min_value` | `min_value` with `min=0` | `error` |
+| `is_numeric` AND not `_is_code_like` AND `col_max > 0` | `{col}_max_value` | `max_value` with `max=_round_up_ceiling(col_max)` | `warning` |
+
+**Code-like columns:** `_is_code_like(col_name, dtype)` is true for integer columns whose name contains a token such as `id`, `code`, `division`, `key`, `zip`, `sku`, `number`, `no`. These are categorical codes (CSV schema inference types `division` as `int`), so range checks on them are meaningless and are skipped.
+
+The statistical generator names rules with the suggester vocabulary (`min_value`, `max_value`, `warning`). These are translated to DQX-native names only when a rule is promoted (see §7.5).
 
 **Helper:**
 ```python
@@ -782,7 +835,7 @@ Output ONLY a JSON array. No prose.
 
 ### 7.5 `ai_suggester/rule_writer.py`
 
-Three public functions.
+Public functions: `ensure_staging_table`, `write_suggestions_to_staging`, `promote_rule`, `reject_rule`, plus the helpers `filter_new_suggestions` and `to_dqx_check`.
 
 #### `ensure_staging_table(spark) -> None`
 ```sql
@@ -796,6 +849,7 @@ CREATE TABLE IF NOT EXISTS dq_rules_staging (
 ```
 
 #### `write_suggestions_to_staging(rules, run_config_name, spark) -> int`
+- **De-duplicates first** (`filter_new_suggestions`): drops a suggestion if the same `name` + `function` + canonical `constraint` is already `pending` for this `run_config_name`, if its `name` matches a rule already live in `dq_rules_registry`, or if it repeats earlier in the same batch. A same-name suggestion with a *different* constraint is kept so a reviewer can choose. Returns 0 when nothing is new.
 - Generates `uuid4()` per rule as `rule_id`
 - Serialises `constraint` dict as `json.dumps()`
 - Sets `status = "pending"`, `suggested_at = datetime.now(utc)`
@@ -810,11 +864,12 @@ CREATE TABLE IF NOT EXISTS dq_rules_staging (
 4. Build registry_row with DQX native nested schema:
    {
      "name":           row["name"],
-     "criticality":    row["criticality"],
+     "criticality":    <warning -> warn>,
      "check": {
-         "function":        row["function"],
+         "function":        <min_value -> is_not_less_than, max_value -> is_not_greater_than,
+                             matches_regex -> regex_match>,       # via to_dqx_check()
          "for_each_column": [] if sql_expression else [row["column_name"]],
-         "arguments":       {k: str(v) for k, v in json.loads(row["constraint"]).items()},
+         "arguments":       <renamed (min/max -> limit); non-string values JSON-encoded>,
      },
      "filter":               None,
      "run_config_name":      row["run_config_name"],
@@ -826,6 +881,8 @@ CREATE TABLE IF NOT EXISTS dq_rules_staging (
 5. spark.createDataFrame([registry_row], schema=registry_schema)
          .write.append.saveAsTable(TABLE_RULES)
 ```
+
+**`to_dqx_check(function, constraint, criticality)`** is the staging -> registry translation boundary. The suggester, its prompts, and `dq_rules_staging` all use the friendly vocabulary (`min_value`, `matches_regex`, `warning`); DQX rejects those names when it loads checks, so they are converted here. Argument values are stored as `map<string,string>` and DQX JSON-decodes each value, so list arguments are written with `json.dumps` (a Python `repr` such as `['011']` is not valid JSON and stays a string).
 
 **Key design decision — `for_each_column`:** For `sql_expression` rules, the column is embedded in the SQL expression string itself (e.g. `quantity > 0`). DQX expects `for_each_column = []` in this case. For all other function types, `for_each_column = [column_name]`.
 
@@ -1194,13 +1251,14 @@ Databricks SQL Alerts can query `dq_rule_metrics` directly (e.g. `violation_pct 
 ## 11. Delta Table Schemas
 
 ### `dq_rules_registry`
-DQX native nested schema (managed by `promote_rule()`):
+DQX native nested schema (written by `seed_rules_registry.py` via `DQEngine.save_checks` and by `promote_rule()`):
 ```sql
 name                  STRING
-criticality           STRING           -- "error" | "warning"
+criticality           STRING           -- "error" | "warn"
 check                 STRUCT<
-    function              STRING,      -- "is_not_null" | "min_value" | "max_value" |
-                                       -- "sql_expression" | "matches_regex" | "is_in_list"
+    function              STRING,      -- DQX-native: "is_not_null" | "is_not_less_than" |
+                                       -- "is_not_greater_than" | "sql_expression" |
+                                       -- "regex_match" | "is_in_list"
     for_each_column       ARRAY<STRING>,
     arguments             MAP<STRING, STRING>
 >
@@ -1420,14 +1478,16 @@ notebooks/quarantine_analyzer.py
 | File | Tests | Requires PySpark | Key Scenarios |
 |---|---|---|---|
 | `tests/test_profiler.py` | 10 | Yes (local session) | Column coverage, null%, numeric stats, distinct values, complex type handling, metadata column skipping |
-| `tests/test_rule_generator.py` | 23 | No | is_not_null threshold, allowlist conditions, min/max rules, `_round_up_ceiling` (parametrised), source/key validation |
+| `tests/test_rule_generator.py` | 25 | No | is_not_null threshold, allowlist conditions, min/max rules, code-like integer columns skipped, `_round_up_ceiling` (parametrised), source/key validation |
 | `tests/test_quarantine_analyzer.py` | 14 | No | `_build_prompt` content, `_parse_response` JSON parsing, markdown stripping, missing keys, bad criticality |
 | `tests/test_rule_metrics.py` | 9 | No | `_build_metrics_from_rows` dict structure, pct calculation, zero total, `write_rule_metrics` mock |
 | `tests/test_alerting.py` | 11 | No | `detect_spikes` SQL logic (mocked), `format_slack_message` content, `send_slack_alert` success/failure, `run_alert_check` orchestration |
 | `tests/test_config.py` | 9 | No | `Settings.from_env()` required-field validation, defaults for optional fields |
+| `tests/test_rule_writer.py` | 11 | No | `to_dqx_check` name/argument/criticality translation, JSON list encoding, `filter_new_suggestions` de-duplication |
+| `tests/test_rule_seed.py` | 7 | No | YAML -> DQX conversion for each rule type, unsupported type, all shipped YAML files convert |
 | `tests/test_event_generator.py` | 9 | No | Schema keys, field formats/types, bad-data injection rate bounds |
 
-**Total: 85 tests**, all passing.
+**Total: 105 tests.** `test_profiler.py` (10) needs a local Spark session and errors without one; the other 95 pass without Spark.
 
 ### Running Tests
 
@@ -1461,30 +1521,34 @@ def spark():
 
 ## 15. Environment Variables Reference
 
-**Required on Databricks cluster** (set via Compute → Edit → Environment Variables; values from Azure Key Vault via `{{secrets/kv-dqx-scope/SECRET-NAME}}`):
+**Required on Databricks cluster** (set via Compute → Edit → Environment Variables; values from the Key Vault-backed secret scope `dqx-poc` via `{{secrets/dqx-poc/secret-name}}`):
 
 | Variable | Secret Name | Required For |
 |---|---|---|
-| `AZURE_STORAGE_KEY` | `AZURE-STORAGE-KEY` | All pipelines (ADLS access) |
-| `EVENTHUB_CONN_STR` | `EVENTHUB-CONN-STR` | Streaming pipeline + Kafka producer |
+| `AZURE_STORAGE_KEY` | `azure-storage-key` | All pipelines (ADLS access) |
+| `EVENTHUB_CONN_STR` | `eventhub-conn-str` | Streaming pipeline + Kafka producer |
 | `KAFKA_BOOTSTRAP_SERVERS` | — | `evhns-dqx-poc.servicebus.windows.net:9093` |
 | `KAFKA_TOPIC` | — | `retail-pos-stream` |
 | `KAFKA_CONSUMER_GROUP` | — | `databricks-dqx-kafka-consumer` |
 | `LLM_BACKEND` | — | `openrouter` (or `claude` / `azure_openai`) |
-| `OPENROUTER_API_KEY` | — | AI Rule Suggester + Quarantine Analyzer (OpenRouter backend) |
+| `OPENROUTER_API_KEY` | `openrouter-api-key` | AI Rule Suggester + Quarantine Analyzer (OpenRouter backend) |
 | `OPENROUTER_MODEL` | — | Optional; defaults to `openrouter/auto` |
 | `ANTHROPIC_API_KEY` | — | Required only if `LLM_BACKEND=claude` |
 | `AZURE_OPENAI_API_KEY` | — | Required only if `LLM_BACKEND=azure_openai` |
 | `AZURE_OPENAI_ENDPOINT` | — | Required only if `LLM_BACKEND=azure_openai` |
 | `AZURE_OPENAI_DEPLOYMENT` | — | Required only if `LLM_BACKEND=azure_openai` |
 
+> **Key Vault secret names** may contain only letters, digits and hyphens (no underscores). `dq_alert_check.py` currently reads the Slack webhook as `slack_webhook_url`, which cannot exist in a Key Vault-backed scope - rename the key to `slack-webhook-url` (and create it in the Key Vault) before enabling Slack delivery. Until then spikes are logged to `dq_alert_log` with `notified=false`.
+>
+> **Do not leave `DATABRICKS_CLUSTER_ID` set in your shell/user environment** unless it is current: the Databricks CLI treats it as a cluster override and `bundle deploy` fails with `Cluster ... does not exist` if it is stale.
+
 **Required locally** (in `.env`, loaded by `load_dotenv()`):
 
 Same as above, plus:
 ```
-DATABRICKS_HOST=https://adb-7405619883480512.12.azuredatabricks.net
+DATABRICKS_HOST=https://adb-7405615968854762.2.azuredatabricks.net
 DATABRICKS_TOKEN=<personal access token>
-DATABRICKS_CLUSTER_ID=0601-042329-nm42bg1s
+DATABRICKS_CLUSTER_ID=1026-013008-6rqlr2d7
 ```
 
 ---
@@ -1505,6 +1569,18 @@ Tasks (concurrent — no depends_on):
        --interval_seconds=5
 ```
 `produce_events` has no `depends_on` on `stream_and_validate` — a streaming task with `timeout_seconds: 0` never reaches a terminal state, so Databricks' `depends_on` would never fire. Both tasks start together; the producer polls a `stream_consumer_ready` readiness signal written by the consumer once it's actually listening, before it sends any events.
+
+### Job: `[RTM] Seed Rules Registry` (`rtm_seed_rules`)
+
+```
+Tasks:
+  1. seed_rules -> notebooks/seed_rules_registry.py (spark_python_task)
+     Parameters:
+       --force=false     (true = overwrite existing rule sets from configs/rules_*.yml)
+```
+Manual. Run once on a new catalog before the batch pipeline. Override at run time with `databricks bundle run rtm_seed_rules --python-params "--force=true"`.
+
+Every task in every job also receives `libraries: ${var.pipeline_libraries}` (see §4.1).
 
 ### Job: `[RTM] Batch DQX Pipeline` (`rtm_batch_pipeline`)
 
@@ -1560,6 +1636,45 @@ Tasks:
 Schedule: cron "0 */15 * * * ?" (every 15 minutes, UTC)
 ```
 Runs independently of the batch DAG's `check_alerts` task since the streaming pipeline has no equivalent end-of-run hook to chain off of — it runs indefinitely.
+
+---
+
+## 17. Deployment & Troubleshooting
+
+### 17.1 Deploying a change
+
+Requires the **current** Databricks CLI (v0.200+, e.g. `winget install Databricks.DatabricksCLI`). The legacy `pip install databricks-cli` (0.18) has no `bundle` command.
+
+```
+databricks bundle validate -t dev -p <profile>
+databricks bundle deploy   -t dev -p <profile>      # uploads files + updates the 4 jobs
+databricks bundle run rtm_seed_rules       -t dev -p <profile>   # fresh catalog only
+databricks bundle run rtm_batch_pipeline   -t dev -p <profile>
+databricks bundle run rtm_kafka_streaming  -t dev -p <profile>   # runs until cancelled
+```
+The bundle deploys to `/Workspace/Users/<you>/.bundle/databricks-dqx-poc/dev/files/`. This is **not** a Repos / Git folder, so nothing adds the repo root to `sys.path` automatically.
+
+### 17.2 Import path (`src`, `config`, `ai_suggester`, `rtm_kafka`)
+
+Each notebook puts the repo root on `sys.path` itself:
+- `spark_python_task` scripts (`setup_delta_tables`, `batch_dqx_validation`, `kafka_*`, `seed_rules_registry`) derive it from the compiled filename: `inspect.currentframe().f_code.co_filename` (works under Databricks' ipykernel `exec` wrapper, where `__file__` is not defined).
+- `notebook_task` notebooks (`ai_rule_suggester`, `quarantine_analyzer`, `rule_effectiveness_report`, `dq_alert_check`) derive it from `dbutils.notebook.entry_point...notebookPath()`.
+
+A `PYTHONPATH` cluster environment variable did **not** fix this under the ipykernel wrapper - keep the bootstrap in code.
+
+### 17.3 Common errors
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `ModuleNotFoundError: No module named 'src'` (or `config`, `ai_suggester`) | Repo root not on `sys.path` for bundle-deployed files | Path bootstrap at the top of the notebook (§17.2) |
+| `ModuleNotFoundError: No module named 'databricks.labs'` | `databricks-labs-dqx` not installed on the cluster | Declared in `pipeline_libraries`; redeploy |
+| `InvalidCheckError: function 'min_value' is not defined` / `Invalid 'criticality' value: 'warning'` | Registry rows use suggester vocabulary instead of DQX-native names | Re-seed with `rtm_seed_rules --force=true`; promotions go through `to_dqx_check()` |
+| `Argument 'allowed' should be of type 'list'` | List argument stored as a Python `repr` string | Store as JSON (`["011", "012"]`) |
+| `'for_each_column' should not be empty` | `sql_expression` check saved with `for_each_column: []` | Omit the key for SQL-expression checks |
+| `TEMP_CHECKPOINT_LOCATION_NOT_SUPPORTED` at `display(...)` | `display()` on a streaming DataFrame is rejected | Wrapped in `try/except` (§6.4) |
+| `Failed to create new KafkaAdminClient` | JAAS login module not shaded | `kafkashaded.` prefix (§6.1) |
+| `bundle deploy`: `Cluster <id> does not exist (404)` for every job | Stale `DATABRICKS_CLUSTER_ID` environment variable overriding the bundle's cluster | Unset it (§15) |
+| Alert logged with `notify_error = webhook_url not configured` | No Slack webhook secret | Create `slack-webhook-url` in the Key Vault (§15) |
 
 ---
 
