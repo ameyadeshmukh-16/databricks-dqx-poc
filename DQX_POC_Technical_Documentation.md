@@ -226,7 +226,7 @@ Single source of truth for all string constants. Every notebook and module impor
 
 ```python
 # Unity Catalog coordinates
-CATALOG  = "dqx_poc_cluster_7405619883480512"
+CATALOG  = "dqx_poc_dev"
 DATABASE = "retail_dqx_poc"
 
 # Table names (fully qualified: CATALOG.DATABASE.table)
@@ -846,7 +846,7 @@ WHERE rule_id = '{rule_id}'
 
 | Widget | Type | Default | Description |
 |---|---|---|---|
-| `source_table` | text | `dqx_poc_cluster_*.retail_dqx_poc.sales_staging` | Table to profile |
+| `source_table` | text | `dqx_poc_dev.retail_dqx_poc.sales_staging` | Table to profile |
 | `run_config_name` | text | `sales_batch_rules` | Rule group for staging |
 | `context_description` | text | `Retail POS sales transactions...` | Domain context for LLM prompt |
 | `llm_backend` | dropdown | `openrouter` | `openrouter \| claude \| azure_openai` |
@@ -1521,14 +1521,14 @@ Tasks (DAG):
 
   3. suggest_rules       → notebooks/ai_rule_suggester.py (notebook_task)   depends_on: validate_data
      base_parameters:
-       source_table:        dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_staging
+       source_table:        dqx_poc_dev.retail_dqx_poc.sales_staging
        run_config_name:     sales_batch_rules
        context_description: Retail POS sales transactions from brick-and-mortar stores
        llm_backend:         openrouter
 
   4. analyze_quarantine  → notebooks/quarantine_analyzer.py (notebook_task)   depends_on: validate_data
      base_parameters:
-       quarantine_table:    dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_quarantine
+       quarantine_table:    dqx_poc_dev.retail_dqx_poc.sales_quarantine
        run_config_name:     sales_batch_rules
        context_description: Retail POS sales transactions from brick-and-mortar stores
        llm_backend:         openrouter

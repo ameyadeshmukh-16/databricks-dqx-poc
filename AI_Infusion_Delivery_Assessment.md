@@ -521,7 +521,7 @@ ORDER BY total_violations DESC
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                       DATABRICKS UNITY CATALOG                           │
-│   Catalog: dqx_poc_cluster_7405619883480512 / DB: retail_dqx_poc        │
+│   Catalog: dqx_poc_dev / DB: retail_dqx_poc        │
 │                                                                           │
 │  ┌──────────────┐  ┌───────────────────────────────────────────────┐    │
 │  │ Config Layer │  │               PROCESSING LAYER                 │    │
@@ -556,7 +556,7 @@ ORDER BY total_violations DESC
 
 ```python
 # config/constants.py — single source of truth for all table names
-CATALOG  = "dqx_poc_cluster_7405619883480512"
+CATALOG  = "dqx_poc_dev"
 DATABASE = "retail_dqx_poc"
 
 TABLE_SALES_CLEAN       = f"{CATALOG}.{DATABASE}.sales_clean"

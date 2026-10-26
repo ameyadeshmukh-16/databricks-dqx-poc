@@ -7,20 +7,20 @@ bundle:
 variables:
   cluster_id:
     description: "Databricks cluster ID to run jobs on"
-    default: "0601-042329-nm42bg1s"
+    default: "1026-013008-6rqlr2d7"
 
 targets:
   dev:
     mode: development
     default: true
     workspace:
-      host: https://adb-7405619883480512.12.azuredatabricks.net
+      host: https://adb-7405615968854762.2.azuredatabricks.net
 
   ## Optionally, there could be 'staging' or 'prod' targets here.
   #
   # prod:
   #   workspace:
-  #     host: https://adb-7405619883480512.12.azuredatabricks.net
+  #     host: https://adb-7405615968854762.2.azuredatabricks.net
 
 resources:
   jobs:
@@ -74,7 +74,7 @@ resources:
           notebook_task:
             notebook_path: ./notebooks/ai_rule_suggester.py
             base_parameters:
-              source_table: "dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_staging"
+              source_table: "dqx_poc_dev.retail_dqx_poc.sales_staging"
               run_config_name: "sales_batch_rules"
               context_description: "Retail POS sales transactions from brick-and-mortar stores"
               llm_backend: "openrouter"
@@ -86,7 +86,7 @@ resources:
           notebook_task:
             notebook_path: ./notebooks/quarantine_analyzer.py
             base_parameters:
-              quarantine_table: "dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_quarantine"
+              quarantine_table: "dqx_poc_dev.retail_dqx_poc.sales_quarantine"
               run_config_name: "sales_batch_rules"
               context_description: "Retail POS sales transactions from brick-and-mortar stores"
               llm_backend: "openrouter"

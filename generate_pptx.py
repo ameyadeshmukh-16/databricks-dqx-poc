@@ -1028,7 +1028,7 @@ def s20_architecture():
     outer = sl.shapes.add_shape(1, Inches(0.35), Inches(1.65), Inches(12.6), Inches(5.6))
     outer.fill.solid(); outer.fill.fore_color.rgb = RGBColor(0xF0, 0xF4, 0xFA)
     outer.line.color.rgb = DARK_BLUE; outer.line.width = Pt(1.5)
-    txb(sl, "DATABRICKS UNITY CATALOG  —  dqx_poc_cluster_7405619883480512 / retail_dqx_poc",
+    txb(sl, "DATABRICKS UNITY CATALOG  —  dqx_poc_dev / retail_dqx_poc",
         Inches(0.45), Inches(1.68), Inches(12.4), Inches(0.32),
         size=9.5, bold=True, color=DARK_BLUE, align=PP_ALIGN.CENTER)
 
@@ -1100,7 +1100,7 @@ def s21_delta_tables():
 
     code = (
         "# config/constants.py — single source of truth for all table names\n"
-        "CATALOG  = 'dqx_poc_cluster_7405619883480512'\n"
+        "CATALOG  = 'dqx_poc_dev'\n"
         "DATABASE = 'retail_dqx_poc'\n"
         "\n"
         "TABLE_SALES_CLEAN       = f'{CATALOG}.{DATABASE}.sales_clean'\n"

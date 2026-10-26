@@ -24,7 +24,7 @@
 # Widgets — configurable when running as a Databricks Job or interactively
 dbutils.widgets.text(
     "quarantine_table",
-    "dqx_poc_cluster_7405619883480512.retail_dqx_poc.sales_quarantine",
+    "dqx_poc_dev.retail_dqx_poc.sales_quarantine",
     "Quarantine table to analyse",
 )
 dbutils.widgets.text(
