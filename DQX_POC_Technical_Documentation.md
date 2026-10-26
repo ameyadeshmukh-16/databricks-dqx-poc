@@ -115,7 +115,7 @@ databricks-dqx-poc/
 │   ├── sales_transactions.csv            Port: 9093 (SASL_SSL / PLAIN)           │
 │   └── checkpoints/                                                              │
 │                                         Azure Key Vault: kv-dqx-poc             │
-│                                         Secret Scope: kv-dqx-scope             │
+│                                         Secret Scope: dqx-poc                  │
 └─────────────────────────────────────────────────────────────────────────────────┘
                     │                                      │
                     ▼                                      ▼
