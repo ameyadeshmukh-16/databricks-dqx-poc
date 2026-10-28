@@ -103,3 +103,47 @@ def format_pending(rows: list[dict]) -> str:
             f"      why: {r.get('reasoning') or r.get('message') or ''}"
         )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Plain-English descriptions (used by the live board's review queue)
+# ---------------------------------------------------------------------------
+
+def _constraint(row: dict) -> dict:
+    raw = row.get("constraint") or "{}"
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else dict(raw)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def describe_rule(row: dict) -> str:
+    """One sentence saying what the rule does to an event, for non-technical readers."""
+    c = _constraint(row)
+    col = row.get("column_name") or "the event"
+    function = row.get("function")
+
+    if function == "is_not_null":
+        return f"Reject events where {col} is missing"
+    if function == "min_value":
+        return f"Reject events where {col} is below {c.get('min', '?')}"
+    if function == "max_value":
+        return f"Reject events where {col} is above {c.get('max', '?')}"
+    if function == "is_in_list":
+        allowed = c.get("allowed", [])
+        shown = ", ".join(str(v) for v in allowed[:6]) + (", …" if len(allowed) > 6 else "")
+        return f"Reject events where {col} is not one of: {shown}"
+    if function == "matches_regex":
+        pattern = c.get("regex") or c.get("pattern") or "?"
+        return f"Reject events where {col} does not match the pattern {pattern}"
+    if function == "sql_expression":
+        return f"Reject events that fail the condition: {c.get('expression', '?')}"
+    return f"Apply the '{function}' check to {col}"
+
+
+def describe_severity(criticality: str | None) -> str:
+    """What happens to an event that breaks the rule."""
+    if (criticality or "").lower() in ("warn", "warning"):
+        return "Warning: the event is flagged but still kept."
+    return "Error: the event is sent to quarantine."

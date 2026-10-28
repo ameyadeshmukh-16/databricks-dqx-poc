@@ -1,22 +1,27 @@
 """
-Live Data Quality Loop — self-refreshing demo board.
+Live Data Quality Loop — self-refreshing demo board with in-app review.
 
 Run on the presenter's laptop (signed in with the Databricks CLI profile):
 
     pip install -r live_board/requirements.txt
-    streamlit run live_board/app.py
+    python -m streamlit run live_board/app.py
 
 It reads the pipeline's Delta tables through the Databricks SQL connector and
-updates itself every few seconds — no browser refresh needed. By default it
-queries the all-purpose cluster the pipeline already uses (no extra compute).
-To stop a forgotten tab from keeping that cluster awake, it auto-pauses after
-a configurable number of minutes (Resume restarts the timer).
+updates itself every few seconds — no browser refresh needed. New AI rule
+suggestions appear as cards that can be approved or rejected right here; the
+decision runs on the cluster (same guards as the Review Rule job) and the stream
+applies an approved rule on its next micro-batch.
+
+By default it queries the all-purpose cluster the pipeline already uses (no extra
+compute). To stop a forgotten tab from keeping that cluster awake, it auto-pauses
+after a configurable number of minutes (Resume restarts the timer).
 """
 
 from __future__ import annotations
 
+import atexit
 import sys
-from datetime import datetime, timezone
+import threading
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # repo root, for src/ and live_board/
@@ -25,6 +30,7 @@ import altair as alt
 import pandas as pd
 import streamlit as st
 
+from live_board.cluster_session import ReviewSession, ReviewSessionError
 from live_board.data import (
     BANNER_SECONDS,
     SqlRunner,
@@ -36,12 +42,20 @@ from live_board.data import (
     rules_chart_rows,
     should_refresh_slow,
 )
+from live_board.impact import describe_impact, preview_rule
+from src.rule_review import describe_rule, describe_severity
 from src.status_view import collect_fast, collect_slow, fmt_int, pct, short_time
 
 st.set_page_config(page_title="Live Data Quality Loop", layout="wide")
 
+CONFIRM_TIMEOUT_SECONDS = 300      # an open confirmation holds the refresh timer at most this long
+RESULT_SECONDS = 90                # how long the outcome of a decision stays on screen
+MAX_CARDS = 8
+PREVIEWS_PER_TICK = 2              # impact previews computed per refresh (keeps ticks light)
+RUN_CONFIG = "streaming_event_rules"
+
 # ---------------------------------------------------------------------------
-# Sidebar controls and session state
+# Session state
 # ---------------------------------------------------------------------------
 ss = st.session_state
 ss.setdefault("live", True)
@@ -52,6 +66,11 @@ ss.setdefault("slow_at", None)
 ss.setdefault("banner", None)
 ss.setdefault("banner_at", 0.0)
 ss.setdefault("last_error", None)
+ss.setdefault("confirm", None)          # {"rule_id", "name"} while an approval awaits confirmation
+ss.setdefault("confirm_at", 0.0)
+ss.setdefault("timer_held", False)
+ss.setdefault("last_review", None)      # {"ok", "message", "at"}
+ss.setdefault("impact", {})             # rule_id -> preview result
 
 with st.sidebar:
     st.header("Board settings")
@@ -78,6 +97,97 @@ def get_runner(compute: str) -> SqlRunner:
     return SqlRunner(compute)
 
 
+@st.cache_resource
+def get_review_session() -> ReviewSession:
+    session = ReviewSession()
+    atexit.register(session.close)          # free the cluster-side session when the board exits
+    _warm_in_background(session)
+    return session
+
+
+def _warm_in_background(session: ReviewSession) -> None:
+    """Start the cluster session now so the first Approve click is fast."""
+    def _go():
+        try:
+            session.warm_up()
+        except Exception:                                    # noqa: BLE001 - surfaced when a decision is made
+            pass
+    threading.Thread(target=_go, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Review actions
+# ---------------------------------------------------------------------------
+
+def _decide(action: str, rule_id: str) -> None:
+    """Run one decision on the cluster and remember the outcome for display."""
+    verb = "Approving" if action == "approve" else "Rejecting"
+    with st.spinner(f"{verb} on the cluster…"):
+        try:
+            result = get_review_session().review(action, rule_id, RUN_CONFIG)
+            outcome = {"ok": result["ok"], "message": result["message"]}
+        except ReviewSessionError as exc:
+            outcome = {"ok": False, "message": f"Could not reach the cluster session ({exc}). "
+                                               f"Use Jobs ▸ [RTM] Review Rule instead."}
+    ss.last_review = {**outcome, "at": now()}
+    ss.confirm = None
+    ss.slow_at = None                  # re-read rules / suggestions on the next tick
+    ss.impact.pop(rule_id, None)
+    st.rerun()                         # full rerun restores the refresh timer
+
+
+def render_queue(snap: dict) -> None:
+    pending = snap["pending"][:MAX_CARDS]
+    pending_ids = {p["rule_id"] for p in snap["pending"]}
+
+    st.subheader("Review queue — your decision")
+    if ss.last_review and now() - ss.last_review["at"] < RESULT_SECONDS:
+        if ss.last_review["ok"]:
+            st.success(f"✅ {ss.last_review['message']}")
+        else:
+            st.error(f"Not applied: {ss.last_review['message']}")
+
+    if ss.confirm and (ss.confirm["rule_id"] not in pending_ids or now() - ss.confirm_at > CONFIRM_TIMEOUT_SECONDS):
+        ss.confirm = None              # rule vanished or the confirmation went stale
+
+    if ss.confirm:
+        row = next((p for p in snap["pending"] if p["rule_id"] == ss.confirm["rule_id"]), None)
+        if row:
+            with st.container(border=True):
+                st.warning("**Confirm approval** — this rule will be enforced on live events.")
+                st.markdown(f"**{row['name']}** — {describe_rule(row)}")
+                st.markdown(describe_severity(row["criticality"]))
+                st.caption(describe_impact(ss.impact.get(row["rule_id"])))
+                c1, c2, _ = st.columns([1, 1, 4])
+                if c1.button("Confirm approval", type="primary", key="confirm_approve"):
+                    _decide("approve", row["rule_id"])
+                if c2.button("Cancel", key="cancel_approve"):
+                    ss.confirm = None
+                    st.rerun()
+
+    if not pending:
+        st.caption("No suggestions waiting. New ones appear here as the AI finds patterns in the quarantined events.")
+        return
+
+    for row in pending:
+        rid = row["rule_id"]
+        with st.container(border=True):
+            st.markdown(f"**{row['name']}**  ·  severity: `{row['criticality']}`  ·  from `{row['source']}`")
+            st.write(describe_rule(row))
+            st.caption(describe_severity(row["criticality"]))
+            why = row.get("reasoning") or row.get("message")
+            if why:
+                st.caption(f"Why the AI suggests it: {why}")
+            st.caption(describe_impact(ss.impact.get(rid)))
+            b1, b2, _ = st.columns([1, 1, 4])
+            if b1.button("Approve", key=f"approve_{rid}", type="primary", disabled=bool(ss.confirm)):
+                ss.confirm = {"rule_id": rid, "name": row["name"]}
+                ss.confirm_at = now()
+                st.rerun()
+            if b2.button("Reject", key=f"reject_{rid}", disabled=bool(ss.confirm)):
+                _decide("reject", rid)
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------
@@ -87,7 +197,12 @@ def render(snap: dict, prev: dict | None, seconds_left: int | None) -> None:
     new_events = total - ((prev["clean"] + prev["quarantine"]) if prev else total)
 
     st.title("Live Data Quality Loop")
-    state = f"auto-pauses in {seconds_left // 60} min" if (ss.live and seconds_left is not None) else "paused"
+    if ss.confirm:
+        state = "refresh held while you confirm"
+    elif ss.live and seconds_left is not None:
+        state = f"auto-pauses in {seconds_left // 60} min"
+    else:
+        state = "paused"
     st.caption(f"Updated {snap['ts']:%H:%M:%S} UTC  ·  refreshes every {interval}s  ·  {state}")
 
     if ss.banner and now() - ss.banner_at < BANNER_SECONDS:
@@ -149,35 +264,43 @@ def render(snap: dict, prev: dict | None, seconds_left: int | None) -> None:
             effect = f"catching {c['caught_pct']:.1f}% of events" if c["caught_pct"] else "no violations yet"
             st.success(f"**{c['name']}**  ·  approved {c['approved_at']} UTC by **{c['by']}**  ·  {effect}")
 
-    st.subheader("AI suggestions")
     sc = snap["sugg_counts"]
     s1, s2, s3 = st.columns(3)
-    s1.metric("Waiting for review", sc.get("pending", 0))
+    s1.metric("Suggestions waiting", sc.get("pending", 0))
     s2.metric("Approved", sc.get("approved", 0))
     s3.metric("Rejected", sc.get("rejected", 0))
-    if snap["pending"]:
-        st.dataframe(
-            pd.DataFrame(snap["pending"]).rename(columns={"name": "suggested rule", "criticality": "severity"}),
-            hide_index=True, width="stretch",
-        )
     note = snap["last_notification"]
     if note:
         st.caption(f"Last review alert at {short_time(note['created_at'])} UTC (+{note['new_count']} new)")
 
-    st.info("**Your turn:** Jobs ▸ [RTM] Review Rule ▸ Run now with different parameters  →  "
-            "`action = approve | reject`, `rule = <suggested rule name>`")
+    render_queue(snap)
 
 
 # ---------------------------------------------------------------------------
 # Self-refreshing section
 # ---------------------------------------------------------------------------
 
-@st.fragment(run_every=f"{interval}s" if ss.live else None)
+def _update_previews(runner: SqlRunner, pending: list[dict]) -> None:
+    """Compute a few missing impact previews per tick and drop ones for rules no longer pending."""
+    ids = {p["rule_id"] for p in pending}
+    for stale in [k for k in ss.impact if k not in ids]:
+        del ss.impact[stale]
+    todo = [p for p in pending[:MAX_CARDS] if p["rule_id"] not in ss.impact][:PREVIEWS_PER_TICK]
+    for row in todo:
+        ss.impact[row["rule_id"]] = preview_rule(runner, row)
+
+
+@st.fragment(run_every=f"{interval}s" if (ss.live and not ss.confirm) else None)
 def board() -> None:
+    if bool(ss.confirm) != ss.timer_held:       # keep the timer in step with an open confirmation
+        ss.timer_held = bool(ss.confirm)
+        st.rerun()
+
     stop, seconds_left = pause_status(ss.started, now(), max_minutes)
     if ss.live and stop:
         ss.live = False
-        st.rerun()                      # full rerun drops the timer
+        get_review_session().close()
+        st.rerun()                              # full rerun drops the timer
 
     if not ss.live:
         st.warning("Updates are paused (to avoid keeping the cluster awake). Use **Resume updates** in the sidebar.")
@@ -189,7 +312,9 @@ def board() -> None:
         runner = get_runner(target)
         fast = collect_fast(runner)
         if should_refresh_slow(ss.slow_at, now()):
-            ss.slow, ss.slow_at = collect_slow(runner), now()
+            ss.slow = collect_slow(runner)
+            ss.slow_at = now()
+            _update_previews(runner, ss.slow["pending"])
         snap = {**fast, **ss.slow}
         ss.last_error = None
     except Exception as exc:            # noqa: BLE001 - show it and retry on the next tick
@@ -205,6 +330,10 @@ def board() -> None:
     if text:
         ss.banner, ss.banner_at = text, now()
         st.toast(text, icon="✅")
+    if prev is not None:
+        new_waiting = snap["sugg_counts"].get("pending", 0) - prev["sugg_counts"].get("pending", 0)
+        if new_waiting > 0:
+            st.toast(f"{new_waiting} new rule suggestion{'s' if new_waiting != 1 else ''} waiting for review", icon="🔔")
     ss.prev = snap
     render(snap, prev, seconds_left)
 

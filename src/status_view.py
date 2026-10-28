@@ -294,7 +294,8 @@ def collect_slow(runner, run_config_name: str = "streaming_event_rules") -> dict
             r["status"]: int(r["n"]) for r in runner.query(f"SELECT status, COUNT(*) AS n {base} GROUP BY status")
         }
         out["pending"] = runner.query(
-            f"SELECT name, criticality, source {base} AND status = 'pending' ORDER BY suggested_at DESC LIMIT 5"
+            f"SELECT rule_id, name, function, column_name, constraint, criticality, message, source, "
+            f"confidence, reasoning {base} AND status = 'pending' ORDER BY suggested_at DESC LIMIT 10"
         )
 
     if runner.table_exists(TABLE_REVIEW_NOTIFICATIONS):
