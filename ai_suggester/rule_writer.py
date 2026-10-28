@@ -75,11 +75,13 @@ def filter_new_suggestions(
     rules: list[dict],
     pending_keys: set[tuple],
     live_names: set[str],
+    max_new: int | None = None,
 ) -> list[dict]:
     """
     Drop suggestions that duplicate one already pending for the same rule group
     (same name, function and constraint), that reuse the name of a live rule, or
-    that repeat an earlier entry in the same batch.
+    that repeat an earlier entry in the same batch. If max_new is set, keep at
+    most that many of the remaining (new) suggestions, in the order given.
     """
     seen = set(pending_keys)
     kept: list[dict] = []
@@ -90,6 +92,8 @@ def filter_new_suggestions(
             continue
         seen.add(key)
         kept.append(rule)
+        if max_new is not None and len(kept) >= max_new:
+            break
     return kept
 
 
@@ -99,19 +103,19 @@ def ensure_staging_table(spark) -> None:
     logger.info("Staging table ready: %s", TABLE_RULES_STAGING)
 
 
-def write_suggestions_to_staging(
+def select_new_suggestions(
     rules: list[dict],
     run_config_name: str,
     spark,
-) -> int:
+    max_new: int | None = None,
+) -> list[dict]:
     """
-    Persist rule suggestions to dq_rules_staging with status='pending'.
-
-    Returns the number of rules written.
+    Return the suggestions that are actually new for this rule group: not already
+    pending (same name/function/constraint), not reusing a live rule's name, and
+    at most max_new of them. Does not write anything.
     """
     if not rules:
-        logger.info("No rules to write — staging table unchanged")
-        return 0
+        return []
 
     ensure_staging_table(spark)
 
@@ -127,10 +131,29 @@ def write_suggestions_to_staging(
             r["name"] for r in spark.table(TABLE_RULES)
             .filter(f"run_config_name = '{run_config_name}'").select("name").collect()
         }
-    total = len(rules)
-    rules = filter_new_suggestions(rules, pending_keys, live_names)
-    if total != len(rules):
-        logger.info("Skipped %d duplicate/already-live suggestion(s)", total - len(rules))
+    new_rules = filter_new_suggestions(rules, pending_keys, live_names, max_new=max_new)
+    if len(rules) != len(new_rules):
+        logger.info("Skipped %d duplicate/already-live suggestion(s)", len(rules) - len(new_rules))
+    return new_rules
+
+
+def write_suggestions_to_staging(
+    rules: list[dict],
+    run_config_name: str,
+    spark,
+    max_new: int | None = None,
+) -> int:
+    """
+    Persist rule suggestions to dq_rules_staging with status='pending'.
+
+    max_new caps how many new (post-dedup) suggestions are written in one call.
+    Returns the number of rules written.
+    """
+    if not rules:
+        logger.info("No rules to write — staging table unchanged")
+        return 0
+
+    rules = select_new_suggestions(rules, run_config_name, spark, max_new=max_new)
     if not rules:
         logger.info("No new rules to write — staging table unchanged")
         return 0

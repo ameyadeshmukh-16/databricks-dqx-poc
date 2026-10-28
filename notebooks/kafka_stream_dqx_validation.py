@@ -134,6 +134,38 @@ checks = dqx.load_checks(
 
 logger.info("Loaded %d streaming rules from Delta table", len(checks))
 
+# Hot reload: process() re-reads the registry every micro-batch so a rule approved
+# while the stream is running is enforced on the next batch (no restart). The new
+# set replaces the active one only if DQX validates it; otherwise the previous
+# rules stay in force.
+from src.rule_reload import rule_set_changes
+
+_rules_config = TableChecksStorageConfig(
+    location=TABLE_RULES,
+    run_config_name=STREAMING_RULE_CONFIG_NAME,
+)
+
+
+def refresh_checks():
+    """Reload streaming rules from the registry; keep the old set on any problem."""
+    global checks
+    try:
+        latest = dqx.load_checks(config=_rules_config)
+        status = dqx.validate_checks(latest)
+        if status.has_errors:
+            logger.warning("Rule reload skipped, keeping %d active rules — invalid checks: %s",
+                           len(checks), status.errors)
+            return
+    except Exception as exc:  # noqa: BLE001 - the stream must survive a bad reload
+        logger.warning("Rule reload failed, keeping %d active rules: %s", len(checks), exc)
+        return
+
+    added, removed, changed = rule_set_changes(checks, latest)
+    if added or removed or changed:
+        logger.info("Rule set updated: %d -> %d rules | added=%s removed=%s changed=%s",
+                    len(checks), len(latest), added, removed, changed)
+    checks = latest
+
 # -----------------------------------
 # Custom Check Functions
 # -----------------------------------
@@ -273,13 +305,15 @@ def process(batch_df, batch_id):
 
     Steps:
       1. Skip empty batches (no-op)
-      2. Apply DQX rules loaded from Delta table
+      2. Reload rules from the registry, then apply them (DQX)
       3. Normalise _errors / _warnings to empty arrays (never NULL) for consistent schema
       4. Split on _errors: records with errors → quarantine, rest → clean
       5. Append both splits to their respective Delta tables
       6. Write one metrics row to stream_batch_metrics for live notebook monitoring
     """
     logger.info("Batch %d started", batch_id)
+
+    refresh_checks()
 
     if batch_df.rdd.isEmpty():
         logger.info("Batch %d: empty, skipping", batch_id)

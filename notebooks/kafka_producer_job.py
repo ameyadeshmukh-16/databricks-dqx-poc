@@ -95,9 +95,22 @@ dbutils.widgets.text("num_events",       "500", "Total events to send (0 = run f
 dbutils.widgets.text("batch_size",       "10",  "Events per batch")
 dbutils.widgets.text("interval_seconds", "5",   "Sleep between batches (seconds)")
 
-num_events     = int(dbutils.widgets.get("num_events"))
-batch_size     = int(dbutils.widgets.get("batch_size"))
-interval_secs  = float(dbutils.widgets.get("interval_seconds"))
+# A spark_python_task passes job parameters as argv (--num_events=0), which widgets
+# do not see; argv wins, the widget value (default or notebook input) is the fallback.
+import sys as _sys
+
+
+def _param(name: str) -> str:
+    prefix = f"--{name}="
+    for a in _sys.argv[1:]:
+        if a.startswith(prefix):
+            return a[len(prefix):]
+    return dbutils.widgets.get(name)
+
+
+num_events     = int(_param("num_events"))
+batch_size     = int(_param("batch_size"))
+interval_secs  = float(_param("interval_seconds"))
 
 run_forever = (num_events == 0)
 

@@ -75,6 +75,11 @@ STAT_COVERAGE_THRESHOLD  = 0.95    # non-null coverage ≥ 95% → use observed 
 # -----------------------------------
 TABLE_ALERT_LOG          = f"{CATALOG}.{DATABASE}.dq_alert_log"
 
+# -----------------------------------
+# Review queue (continuous streaming suggestions)
+# -----------------------------------
+TABLE_REVIEW_NOTIFICATIONS = f"{CATALOG}.{DATABASE}.dq_review_notifications"
+
 ALERT_LOOKBACK_RUNS      = 10      # runs used to compute a rule's baseline violation_pct
 ALERT_SPIKE_MULTIPLIER   = 2.5     # last run must exceed baseline_pct * this to be a spike
 ALERT_MIN_ABSOLUTE_PCT   = 5.0     # floor so a near-zero baseline doesn't trivially "spike"

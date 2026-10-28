@@ -12,6 +12,7 @@ Select the backend via:
 from __future__ import annotations
 
 import os
+import time
 from abc import ABC, abstractmethod
 
 from src.logger import get_logger
@@ -132,6 +133,22 @@ class AzureOpenAIBackend(LLMBackend):
 # ==========================================================
 # NEW: OpenRouter Backend
 # ==========================================================
+class LLMResponseError(RuntimeError):
+    """The provider answered, but without usable message content."""
+
+
+def extract_content(response) -> str:
+    """Return the message text from a chat-completions response or raise LLMResponseError."""
+    choices = getattr(response, "choices", None)
+    if not choices:
+        detail = getattr(response, "error", None) or "no choices in response"
+        raise LLMResponseError(f"Provider returned no choices: {detail}")
+    content = getattr(getattr(choices[0], "message", None), "content", None)
+    if not content or not str(content).strip():
+        raise LLMResponseError("Provider returned an empty message")
+    return content
+
+
 class OpenRouterBackend(LLMBackend):
     """OpenRouter API backend (OpenAI-compatible)."""
 
@@ -172,22 +189,33 @@ class OpenRouterBackend(LLMBackend):
         client = OpenAI(
             api_key=self._api_key,
             base_url=self._base_url,
+            timeout=60.0,
         )
 
-        response = client.chat.completions.create(
-            model=self._model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": system or "You are a data quality expert.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            max_tokens=4096,
-            temperature=0.2,
-        )
-
-        return response.choices[0].message.content
+        # The free routed model sometimes answers 200 with no choices (upstream
+        # error / rate limit). Retry once, then fail with the provider's message.
+        last_error = None
+        for attempt in (1, 2):
+            response = client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": system or "You are a data quality expert.",
+                    },
+                    {"role": "user", "content": prompt},
+                ],
+                max_tokens=4096,
+                temperature=0.2,
+            )
+            try:
+                return extract_content(response)
+            except LLMResponseError as exc:
+                last_error = exc
+                logger.warning("OpenRouter attempt %d/2 returned no usable answer: %s", attempt, exc)
+                if attempt == 1:
+                    time.sleep(3)
+        raise last_error
 
 
 def get_backend(name: str | None = None) -> LLMBackend:
