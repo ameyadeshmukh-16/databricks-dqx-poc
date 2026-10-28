@@ -121,8 +121,9 @@ def _warm_in_background(session: ReviewSession) -> None:
 
 def _decide(action: str, rule_id: str) -> None:
     """Run one decision on the cluster and remember the outcome for display."""
-    verb = "Approving" if action == "approve" else "Rejecting"
-    with st.spinner(f"{verb} on the cluster…"):
+    verb = ("Checking the rule on live events, then approving"
+            if action == "approve" else "Rejecting")
+    with st.spinner(f"{verb}… (about 15 s)"):
         try:
             result = get_review_session().review(action, rule_id, RUN_CONFIG)
             outcome = {"ok": result["ok"], "message": result["message"]}
@@ -175,9 +176,11 @@ def render_queue(snap: dict) -> None:
             st.markdown(f"**{row['name']}**  ·  severity: `{row['criticality']}`  ·  from `{row['source']}`")
             st.write(describe_rule(row))
             st.caption(describe_severity(row["criticality"]))
+            made_by = row.get("llm_backend")
+            st.caption(f"Suggested by: {made_by}" if made_by else "Suggested by: statistical analysis (no AI model)")
             why = row.get("reasoning") or row.get("message")
             if why:
-                st.caption(f"Why the AI suggests it: {why}")
+                st.caption(f"Why: {why}")
             st.caption(describe_impact(ss.impact.get(rid)))
             b1, b2, _ = st.columns([1, 1, 4])
             if b1.button("Approve", key=f"approve_{rid}", type="primary", disabled=bool(ss.confirm)):

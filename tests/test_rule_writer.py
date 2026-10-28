@@ -70,3 +70,35 @@ def test_live_rule_name_is_dropped():
 def test_duplicates_within_one_batch_are_collapsed():
     rules = [_rule("x"), _rule("x"), _rule("y")]
     assert [r["name"] for r in filter_new_suggestions(rules, set(), set())] == ["x", "y"]
+
+
+# ---------------------------------------------------------------------------
+# LLM key variants
+# ---------------------------------------------------------------------------
+
+from ai_suggester.rule_writer import normalize_constraint
+
+
+def test_regex_pattern_key_is_normalised_and_translated():
+    assert normalize_constraint("matches_regex", {"pattern": "^a$"}) == {"regex": "^a$"}
+    assert to_dqx_check("matches_regex", {"pattern": "^a$"}, "error") == ("regex_match", {"regex": "^a$"}, "error")
+
+
+def test_sql_expression_key_variants():
+    for key in ("sql_expression", "sql", "condition"):
+        assert normalize_constraint("sql_expression", {key: "a > 1"}) == {"expression": "a > 1"}
+    assert to_dqx_check("sql_expression", {"sql_expression": "a > 1"}, "error")[1] == {"expression": "a > 1"}
+
+
+def test_list_and_range_key_variants():
+    assert normalize_constraint("is_in_list", {"values": [1, 2]}) == {"allowed": [1, 2]}
+    assert normalize_constraint("min_value", {"minimum": 3}) == {"min": 3}
+    assert normalize_constraint("max_value", {"max_value": 9}) == {"max": 9}
+    assert to_dqx_check("min_value", {"minimum": 3}, "warning") == ("is_not_less_than", {"limit": "3"}, "warn")
+
+
+def test_canonical_keys_are_untouched_and_never_overwritten():
+    assert normalize_constraint("matches_regex", {"regex": "x"}) == {"regex": "x"}
+    assert normalize_constraint("matches_regex", {"regex": "x", "pattern": "y"}) == {"regex": "x", "pattern": "y"}
+    assert normalize_constraint("is_not_null", {}) == {}
+    assert normalize_constraint("is_not_null", None) == {}

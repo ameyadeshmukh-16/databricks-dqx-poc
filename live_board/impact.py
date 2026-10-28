@@ -17,6 +17,7 @@ import math
 import re
 from typing import Iterable
 
+from ai_suggester.rule_writer import normalize_constraint
 from config.constants import TABLE_STREAM_CLEAN, TABLE_STREAM_QUARANTINE
 
 # Keep in sync with event_schema in notebooks/kafka_stream_dqx_validation.py (+ ingested_at).
@@ -115,7 +116,7 @@ def _constraint(row: dict) -> dict:
 def violation_predicate(row: dict, columns: Iterable[str] = EVENT_COLUMNS) -> str | None:
     """SQL condition that is TRUE when an event breaks the staged rule, or None if it cannot be tested safely."""
     function = row.get("function")
-    c = _constraint(row)
+    c = normalize_constraint(function, _constraint(row))
     columns = list(columns)
     try:
         if function == "sql_expression":

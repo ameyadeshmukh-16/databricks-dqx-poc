@@ -8,6 +8,9 @@ variables:
   cluster_id:
     description: "Databricks cluster ID to run jobs on"
     default: "1026-013008-6rqlr2d7"
+  llm_model:
+    description: "OpenRouter model(s) for rule suggestions, comma-separated in order of preference (the next is tried if one fails). Pinned because the 'openrouter/free' router returned empty answers in testing; empty = use the cluster's OPENROUTER_MODEL setting"
+    default: "poolside/laguna-s-2.1:free,google/gemma-4-31b-it:free"
   streaming_max_runtime_seconds:
     description: "Hard cap on one run of the streaming job (cost guard): the run and every task are stopped after this long"
     default: 900
@@ -106,6 +109,7 @@ resources:
               - "--min_new_rows=30"
               - "--max_new=5"
               - "--llm_backend=openrouter"
+              - "--llm_model=${var.llm_model}"
           existing_cluster_id: ${var.cluster_id}
           libraries: ${var.pipeline_libraries}
 

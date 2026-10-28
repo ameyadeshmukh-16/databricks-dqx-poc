@@ -25,6 +25,10 @@ _DEFAULT_BACKEND = "claude"
 class LLMBackend(ABC):
     """Abstract LLM backend.  Subclasses implement generate()."""
 
+    # The model that actually answered the last call (providers can route "auto"/"free"
+    # aliases to different models, so this is recorded as provenance for each suggestion).
+    last_model: str | None = None
+
     @abstractmethod
     def generate(self, prompt: str, system: str = "") -> str:
         """Send prompt to the LLM and return the response text."""
@@ -64,6 +68,7 @@ class ClaudeBackend(LLMBackend):
             messages=[{"role": "user", "content": prompt}],
         )
 
+        self.last_model = getattr(message, "model", None) or self._model
         return message.content[0].text
 
 
@@ -127,12 +132,19 @@ class AzureOpenAIBackend(LLMBackend):
             temperature=0.2,
         )
 
+        self.last_model = self._deployment
         return response.choices[0].message.content
 
 
 # ==========================================================
 # NEW: OpenRouter Backend
 # ==========================================================
+def parse_model_list(value: str | None) -> list[str]:
+    """'a, b ,c' -> ['a', 'b', 'c'] (empty entries dropped); never returns an empty list."""
+    models = [m.strip() for m in (value or "").split(",") if m.strip()]
+    return models or ["openrouter/auto"]
+
+
 class LLMResponseError(RuntimeError):
     """The provider answered, but without usable message content."""
 
@@ -166,11 +178,10 @@ class OpenRouterBackend(LLMBackend):
             "https://openrouter.ai/api/v1"
         )
 
-        # Free routing model by default
-        self._model = os.environ.get(
-            "OPENROUTER_MODEL",
-            "openrouter/auto"
-        )
+        # One model, or an ordered comma-separated list: if the first fails the next is tried.
+        # (The 'openrouter/free' router can return empty answers; pinned models were more reliable.)
+        self._models = parse_model_list(os.environ.get("OPENROUTER_MODEL", "openrouter/auto"))
+        self._model = self._models[0]
 
         if not self._api_key:
             raise EnvironmentError(
@@ -195,27 +206,37 @@ class OpenRouterBackend(LLMBackend):
         # The free routed model sometimes answers 200 with no choices (upstream
         # error / rate limit). Retry once, then fail with the provider's message.
         last_error = None
-        for attempt in (1, 2):
-            response = client.chat.completions.create(
-                model=self._model,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": system or "You are a data quality expert.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                max_tokens=4096,
-                temperature=0.2,
-            )
-            try:
-                return extract_content(response)
-            except LLMResponseError as exc:
-                last_error = exc
-                logger.warning("OpenRouter attempt %d/2 returned no usable answer: %s", attempt, exc)
-                if attempt == 1:
-                    time.sleep(3)
+        attempts = 2 if len(self._models) == 1 else 1      # with a fallback list, move on instead of retrying
+        for model in self._models:
+            for attempt in range(1, attempts + 1):
+                try:
+                    response = client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": system or "You are a data quality expert.",
+                            },
+                            {"role": "user", "content": prompt},
+                        ],
+                        max_tokens=4096,
+                        temperature=0.2,
+                    )
+                    self.last_model = getattr(response, "model", None) or model
+                    return extract_content(response)
+                except Exception as exc:                   # noqa: BLE001 - provider errors, empty answers, timeouts
+                    last_error = exc
+                    logger.warning("OpenRouter model %s attempt %d/%d failed: %s",
+                                   model, attempt, attempts, str(exc).splitlines()[0][:160])
+                    if attempt < attempts:
+                        time.sleep(3)
         raise last_error
+
+
+def describe_backend(llm: LLMBackend) -> str:
+    """Provenance label stored with a suggestion, e.g. 'openrouter:meta-llama/llama-3.3-70b-instruct:free'."""
+    provider = type(llm).__name__.replace("Backend", "").lower()
+    return f"{provider}:{llm.last_model}" if getattr(llm, "last_model", None) else provider
 
 
 def get_backend(name: str | None = None) -> LLMBackend:

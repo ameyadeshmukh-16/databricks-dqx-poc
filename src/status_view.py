@@ -295,7 +295,7 @@ def collect_slow(runner, run_config_name: str = "streaming_event_rules") -> dict
         }
         out["pending"] = runner.query(
             f"SELECT rule_id, name, function, column_name, constraint, criticality, message, source, "
-            f"confidence, reasoning {base} AND status = 'pending' ORDER BY suggested_at DESC LIMIT 10"
+            f"llm_backend, confidence, reasoning {base} AND status = 'pending' ORDER BY suggested_at DESC LIMIT 10"
         )
 
     if runner.table_exists(TABLE_REVIEW_NOTIFICATIONS):

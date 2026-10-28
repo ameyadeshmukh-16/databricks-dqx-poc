@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 
-from ai_suggester.llm_backend import get_backend, LLMBackend
+from ai_suggester.llm_backend import LLMBackend, describe_backend, get_backend
 from src.logger import get_logger
 
 logger = get_logger(__name__)
@@ -159,4 +159,4 @@ def _parse_response(raw: str, run_config_name: str, backend_name: str) -> list[d
 
 
 def _backend_name(llm: LLMBackend) -> str:
-    return type(llm).__name__.replace("Backend", "").lower()
+    return describe_backend(llm)

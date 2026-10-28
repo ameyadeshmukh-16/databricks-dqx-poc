@@ -138,7 +138,12 @@ logger.info("Loaded %d streaming rules from Delta table", len(checks))
 # while the stream is running is enforced on the next batch (no restart). The new
 # set replaces the active one only if DQX validates it; otherwise the previous
 # rules stay in force.
-from src.rule_reload import rule_set_changes
+from src.rule_reload import fallback_culprits, rule_set_changes, without_blocked
+
+# Rules that passed validation but could not be applied to real events (e.g. an unknown column).
+# They are blocked for the life of this stream so one bad rule never takes the stream down.
+_blocked: set = set()
+_last_good = list(checks)     # the most recent rule set that applied successfully
 
 _rules_config = TableChecksStorageConfig(
     location=TABLE_RULES,
@@ -150,7 +155,7 @@ def refresh_checks():
     """Reload streaming rules from the registry; keep the old set on any problem."""
     global checks
     try:
-        latest = dqx.load_checks(config=_rules_config)
+        latest = without_blocked(dqx.load_checks(config=_rules_config), _blocked)
         status = dqx.validate_checks(latest)
         if status.has_errors:
             logger.warning("Rule reload skipped, keeping %d active rules — invalid checks: %s",
@@ -299,6 +304,22 @@ logger.info("Tables ready")
 # -----------------------------------
 # foreachBatch — Micro-Batch Processing
 # -----------------------------------
+def _unevaluable_rules(dq_df) -> set:
+    """Names of rules whose result message says DQX skipped evaluating them (see src.rule_reload)."""
+    from pyspark.sql import functions as F
+    from src.rule_reload import is_skipped_message  # noqa: F401  (documents the shared definition)
+    names = set()
+    for column in ("_errors", "_warnings"):
+        rows = (
+            dq_df.select(F.explode(F.col(column)).alias("e"))
+            .where(F.lower(F.col("e.message")).like("%evaluation skipped%")
+                   | F.lower(F.col("e.message")).like("%invalid sql expression%"))
+            .select("e.name").distinct().collect()
+        )
+        names.update(r["name"] for r in rows)
+    return names
+
+
 def process(batch_df, batch_id):
     """
     Process a single Spark Structured Streaming micro-batch.
@@ -319,12 +340,45 @@ def process(batch_df, batch_id):
         logger.info("Batch %d: empty, skipping", batch_id)
         return
 
-    # Apply all DQX checks; adds _errors and _warnings columns
-    dq_df = dqx.apply_checks_by_metadata(
-        batch_df,
-        checks,
-        custom_check_functions=custom_check_functions,
-    )
+    # Apply all DQX checks; adds _errors and _warnings columns.
+    # If a newly approved rule cannot be applied, fall back to the last working rule set,
+    # block the culprit(s) and carry on — the stream must not die because of one rule.
+    global checks, _last_good
+    try:
+        dq_df = dqx.apply_checks_by_metadata(
+            batch_df,
+            checks,
+            custom_check_functions=custom_check_functions,
+        )
+    except Exception as exc:  # noqa: BLE001
+        culprits = fallback_culprits(_last_good, checks)
+        if not culprits:
+            raise                                # the previously working rules fail too: a real problem
+        logger.error("Rule set could not be applied (%s). Falling back to the last working rules "
+                     "and blocking: %s", str(exc).splitlines()[0][:200], sorted(culprits))
+        _blocked.update(culprits)
+        checks = without_blocked(_last_good, _blocked)
+        dq_df = dqx.apply_checks_by_metadata(
+            batch_df,
+            checks,
+            custom_check_functions=custom_check_functions,
+        )
+
+    # DQX does not raise for a check it cannot evaluate (e.g. an unknown column): it marks EVERY event
+    # as failing that check. Look for that right after the rule set changes, block the rule and redo.
+    if rule_set_changes(_last_good, checks) != ([], [], []):
+        unevaluable = _unevaluable_rules(dq_df)
+        if unevaluable:
+            logger.error("Blocking rule(s) DQX could not evaluate (they would quarantine every event): %s",
+                         sorted(unevaluable))
+            _blocked.update(unevaluable)
+            checks = without_blocked(checks, _blocked)
+            dq_df = dqx.apply_checks_by_metadata(
+                batch_df,
+                checks,
+                custom_check_functions=custom_check_functions,
+            )
+    _last_good = list(checks)
 
     # Normalise NULL arrays to empty arrays to keep Delta schema consistent
     dq_df = dq_df.withColumn(

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from ai_suggester.rule_writer import to_dqx_check
+from ai_suggester.rule_writer import normalize_constraint, to_dqx_check
 from config.constants import (
     BATCH_RULE_CONFIG_NAME,
     STREAMING_RULE_CONFIG_NAME,
@@ -120,7 +120,7 @@ def _constraint(row: dict) -> dict:
 
 def describe_rule(row: dict) -> str:
     """One sentence saying what the rule does to an event, for non-technical readers."""
-    c = _constraint(row)
+    c = normalize_constraint(row.get("function"), _constraint(row))
     col = row.get("column_name") or "the event"
     function = row.get("function")
 

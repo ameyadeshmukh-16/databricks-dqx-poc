@@ -14,6 +14,8 @@ Parameters (spark_python_task argv):
   --min_new_rows=30         new quarantined rows required for later cycles
   --max_new=5               max new suggestions staged per cycle
   --llm_backend=openrouter  openrouter | claude | azure_openai
+  --llm_model=              optional: pin the OpenRouter model for repeatable output
+                            (empty = use the cluster's OPENROUTER_MODEL setting)
 """
 
 # -----------------------------------
@@ -62,11 +64,15 @@ min_rows         = int(_arg("min_rows", "60"))
 min_new_rows     = int(_arg("min_new_rows", "30"))
 max_new          = int(_arg("max_new", "5"))
 llm_backend      = _arg("llm_backend", "openrouter")
+llm_model        = _arg("llm_model", "").strip()
+if llm_model:
+    os.environ["OPENROUTER_MODEL"] = llm_model      # read by OpenRouterBackend when it is created
 
 spark = SparkSession.builder.getOrCreate()
 
-logger.info("Streaming rule suggester started: interval=%ds min_rows=%d min_new_rows=%d max_new=%d backend=%s",
-            interval_seconds, min_rows, min_new_rows, max_new, llm_backend)
+logger.info("Streaming rule suggester started: interval=%ds min_rows=%d min_new_rows=%d max_new=%d backend=%s model=%s",
+            interval_seconds, min_rows, min_new_rows, max_new, llm_backend,
+            os.environ.get("OPENROUTER_MODEL", "(cluster default)") if llm_backend == "openrouter" else "-")
 
 
 def _quarantine_count() -> int:

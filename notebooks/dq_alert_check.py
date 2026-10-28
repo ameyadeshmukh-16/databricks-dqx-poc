@@ -11,7 +11,11 @@
 # MAGIC **Required cluster secret:**
 # MAGIC - `SLACK_WEBHOOK_URL` — read from a Databricks secret scope, not a plaintext parameter.
 # MAGIC   Set up: `databricks secrets create-scope dqx-poc` then
-# MAGIC   `databricks secrets put-secret dqx-poc slack_webhook_url`
+# MAGIC   `databricks secrets put-secret dqx-poc slack-webhook-url`
+# MAGIC
+# MAGIC   The `dqx-poc` scope is backed by Azure Key Vault, whose secret names allow only letters,
+# MAGIC   digits and hyphens, so the key is `slack-webhook-url` (create it in the Key Vault).
+# MAGIC   The old underscore name `slack_webhook_url` is still tried as a fallback.
 
 # COMMAND ----------
 
@@ -55,12 +59,18 @@ spark = DatabricksSession.builder.getOrCreate()
 
 # COMMAND ----------
 
-try:
-    webhook_url = dbutils.secrets.get(scope=secret_scope, key="slack_webhook_url")
-except Exception as exc:
-    print(f"Could not read secret '{secret_scope}/slack_webhook_url': {exc}")
+webhook_url = ""
+last_error = "no value found"
+for _key in ("slack-webhook-url", "slack_webhook_url"):        # Key Vault-friendly name first
+    try:
+        webhook_url = dbutils.secrets.get(scope=secret_scope, key=_key)
+        print(f"Loaded the Slack webhook from secret '{secret_scope}/{_key}'.")
+        break
+    except Exception as exc:                                    # noqa: BLE001 - try the next name
+        last_error = exc
+if not webhook_url:
+    print(f"Could not read a Slack webhook from scope '{secret_scope}' (tried slack-webhook-url, slack_webhook_url): {last_error}")
     print("Spikes will still be detected and logged, but no Slack notification will be sent.")
-    webhook_url = ""
 
 # COMMAND ----------
 

@@ -75,4 +75,8 @@ KAFKA_SPARK_OPTIONS = {
     "kafka.sasl.jaas.config":  _JAAS_CONFIG,
     "kafka.group.id":          CONSUMER_GROUP,
     "startingOffsets":         "latest",    # pick up live events only; use "earliest" for replay
+    # Event Hubs only keeps data for a limited time. If the stream is restarted after a gap, its checkpoint
+    # can point at offsets that no longer exist; by default Spark then refuses to continue and the stream
+    # dies on its first batch. Skipping the expired range is the right behaviour for this pipeline.
+    "failOnDataLoss":          "false",
 }

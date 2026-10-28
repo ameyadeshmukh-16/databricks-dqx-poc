@@ -24,6 +24,30 @@ _DQX_FUNCTIONS = {
 _DQX_CRITICALITY = {"warning": "warn"}
 
 
+# LLMs spell constraint keys in several ways; map the common variants to the canonical key
+# the suggester prompt asks for (regex / expression / allowed / min / max).
+_CONSTRAINT_ALIASES = {
+    "matches_regex": {"pattern": "regex", "regular_expression": "regex"},
+    "sql_expression": {"sql_expression": "expression", "sql": "expression", "condition": "expression"},
+    "is_in_list": {"values": "allowed", "allowed_values": "allowed", "list": "allowed"},
+    "min_value": {"min_value": "min", "minimum": "min", "limit": "min"},
+    "max_value": {"max_value": "max", "maximum": "max", "limit": "max"},
+}
+
+
+def normalize_constraint(function: str, constraint: dict) -> dict:
+    """Rename common alternative keys to the canonical ones (never overwrites a canonical key)."""
+    aliases = _CONSTRAINT_ALIASES.get(function, {})
+    out = {}
+    for key, value in (constraint or {}).items():
+        canonical = aliases.get(key, key)
+        if canonical != key and canonical in constraint:
+            out[key] = value                         # both present: keep the alias as is
+        else:
+            out[canonical] = value
+    return out
+
+
 def to_dqx_check(function: str, constraint: dict, criticality: str) -> tuple[str, dict, str]:
     """
     Translate a staged suggestion into the names and argument encoding DQX
@@ -32,6 +56,7 @@ def to_dqx_check(function: str, constraint: dict, criticality: str) -> tuple[str
     Arguments are stored as map<string,string>; DQX JSON-decodes each value,
     so lists must be JSON (not Python repr) to come back as lists.
     """
+    constraint = normalize_constraint(function, constraint)
     dqx_function, arg_renames = _DQX_FUNCTIONS.get(function, (function, {}))
     arguments = {
         arg_renames.get(k, k): v if isinstance(v, str) else json.dumps(v)

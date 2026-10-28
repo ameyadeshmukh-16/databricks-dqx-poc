@@ -83,3 +83,57 @@ def test_unknown_action_is_refused():
 def test_column_check_is_skipped_when_the_target_table_is_unknown():
     out, rec = _run("approve", "a", [_row("1", "a", column="whatever")], columns=None)
     assert out["ok"] and rec.promoted
+
+
+# ---------------------------------------------------------------------------
+# trial run on real events
+# ---------------------------------------------------------------------------
+
+def _run_with_dry_run(dry_run, pending=None):
+    rec = Recorder()
+    out = decide("approve", "a", pending or [_row("1", "a")], ["event_id", "quantity"], set(),
+                 reviewer="me", promote=rec.promote, reject=rec.reject, validate=rec.validate, dry_run=dry_run)
+    return out, rec
+
+
+def test_a_rule_that_fails_its_trial_run_is_not_approved():
+    def boom(check):
+        raise RuntimeError("[UNRESOLVED_COLUMN] column `revenue` cannot be resolved\nstack trace")
+    out, rec = _run_with_dry_run(boom)
+    assert not out["ok"] and not rec.promoted
+    assert "NOT approved" in out["message"] and "UNRESOLVED_COLUMN" in out["message"]
+    assert "stack trace" not in out["message"]                       # only the first line is shown
+
+
+def test_a_rule_that_passes_its_trial_run_is_approved():
+    seen = []
+    out, rec = _run_with_dry_run(lambda check: seen.append(check["name"]))
+    assert out["ok"] and rec.promoted and seen == ["a"]
+
+
+def test_the_trial_run_is_skipped_when_there_is_nothing_to_try_it_on():
+    out, rec = _run_with_dry_run(None)
+    assert out["ok"] and rec.promoted
+
+
+def test_the_trial_run_sees_the_translated_dqx_check():
+    seen = []
+    row = _row("1", "a", "min_value", "quantity", '{"min": 1}')
+    _run_with_dry_run(seen.append, pending=[row])
+    assert seen[0]["check"]["function"] == "is_not_less_than"
+
+
+def test_a_rejection_never_runs_the_trial():
+    called = []
+    rec = Recorder()
+    decide("reject", "a", [_row("1", "a")], ["quantity"], set(), reviewer="me",
+           promote=rec.promote, reject=rec.reject, validate=rec.validate, dry_run=lambda c: called.append(1))
+    assert called == [] and rec.rejected
+
+
+def test_the_trial_error_message_names_the_unevaluable_expression():
+    def swallowed(check):
+        raise RuntimeError("Check evaluation skipped due to invalid sql expression: 'revenue_total > 0'")
+    out, rec = _run_with_dry_run(swallowed)
+    assert not out["ok"] and not rec.promoted
+    assert "revenue_total" in out["message"]
