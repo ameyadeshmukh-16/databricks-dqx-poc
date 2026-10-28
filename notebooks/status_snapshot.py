@@ -6,7 +6,7 @@ Run from the Jobs UI: "[RTM] Live Status" > Run now. Reads the output; changes n
 
 Parameters (spark_python_task argv):
   --run_config_name=streaming_event_rules
-  --last_batches=5
+  --last_batches=8
 """
 
 # -----------------------------------
@@ -39,5 +39,5 @@ def _arg(name: str, default: str) -> str:
 render_snapshot(
     SparkSession.builder.getOrCreate(),
     run_config_name=_arg("run_config_name", "streaming_event_rules"),
-    last_batches=int(_arg("last_batches", "5")),
+    last_batches=int(_arg("last_batches", "8")),
 )

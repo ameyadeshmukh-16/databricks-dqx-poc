@@ -110,17 +110,17 @@ resources:
           libraries: ${var.pipeline_libraries}
 
         - task_key: live_monitor
-          # Prints a fresh status snapshot every 45 s (event flow, active rules,
-          # rules firing, pending suggestions, notifications) so the whole loop
-          # can be followed from this task's output. Read-only.
+          # Prints a compact one-screen status view every ~30 s (events in, rules
+          # enforced, AI suggestions, what changed) so the whole loop can be
+          # followed from this task's output. Read-only.
           depends_on:
             - task_key: seed_rules
           spark_python_task:
             python_file: ./notebooks/live_monitor.py
             parameters:
-              - "--interval_seconds=45"
+              - "--interval_seconds=30"
               - "--run_config_name=streaming_event_rules"
-              - "--last_batches=5"
+              - "--last_batches=8"
           existing_cluster_id: ${var.cluster_id}
           libraries: ${var.pipeline_libraries}
 
@@ -166,7 +166,7 @@ resources:
             python_file: ./notebooks/status_snapshot.py
             parameters:
               - "--run_config_name=streaming_event_rules"
-              - "--last_batches=5"
+              - "--last_batches=8"
           existing_cluster_id: ${var.cluster_id}
           libraries: ${var.pipeline_libraries}
 

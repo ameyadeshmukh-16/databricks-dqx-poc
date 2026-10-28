@@ -1,15 +1,16 @@
 """
 Live Monitor — long-running task in the streaming pipeline.
 
-Prints a fresh status snapshot (event flow, active rules, rules firing, pending
-suggestions, notifications) every --interval_seconds so the whole loop can be
-followed from one task's output while the pipeline runs. Read-only; it ends when
-the job-level timeout (or a manual cancel) stops the run.
+Prints a compact one-screen status view (events in, rules enforced, AI suggestions,
+what the reviewer should do next, and what changed since the last snapshot) every
+--interval_seconds so the whole loop can be followed from one task's output while
+the pipeline runs. Read-only; it ends when the job-level timeout (or a manual
+cancel) stops the run.
 
 Parameters (spark_python_task argv):
-  --interval_seconds=45
+  --interval_seconds=30
   --run_config_name=streaming_event_rules
-  --last_batches=5
+  --last_batches=8
 """
 
 # -----------------------------------
@@ -19,7 +20,6 @@ import inspect
 import os
 import sys
 import time
-from datetime import datetime, timezone
 
 from pyspark.sql import SparkSession
 
@@ -44,17 +44,21 @@ def _arg(name: str, default: str) -> str:
     return default
 
 
-interval_seconds = int(_arg("interval_seconds", "45"))
+interval_seconds = int(_arg("interval_seconds", "30"))
 run_config_name  = _arg("run_config_name", "streaming_event_rules")
-last_batches     = int(_arg("last_batches", "5"))
+last_batches     = int(_arg("last_batches", "8"))
 
 spark = SparkSession.builder.getOrCreate()
 logger.info("Live monitor started: every %ds for %s", interval_seconds, run_config_name)
 
+previous = None
 while True:
-    print(f"\n{'#' * 70}\n# SNAPSHOT {datetime.now(tz=timezone.utc):%Y-%m-%d %H:%M:%S} UTC\n{'#' * 70}", flush=True)
     try:
-        render_snapshot(spark, run_config_name=run_config_name, last_batches=last_batches)
+        # The screen has its own banner and timestamp; passing the previous snapshot
+        # adds the "since last snapshot" line.
+        previous = render_snapshot(spark, run_config_name=run_config_name,
+                                   last_batches=last_batches, prev=previous)
+        print("\n", flush=True)
     except Exception as exc:  # noqa: BLE001 - tables may not exist yet; never stop the monitor
         logger.warning("Snapshot failed, will retry: %s", exc)
     sys.stdout.flush()
