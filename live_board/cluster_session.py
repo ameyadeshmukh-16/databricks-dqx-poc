@@ -126,6 +126,19 @@ class ReviewSession:
                         raise ReviewSessionError(str(exc).splitlines()[0][:300]) from exc
         raise ReviewSessionError("unreachable")                # pragma: no cover
 
+    def run_code(self, code: str) -> str:
+        """Run arbitrary Python in the warm session and return its printed output (used by the pre-flight check)."""
+        with self._lock:
+            for attempt in (1, 2):
+                try:
+                    self._ensure()
+                    return self._run(code)
+                except Exception as exc:                       # noqa: BLE001
+                    self._reset()
+                    if attempt == 2:
+                        raise ReviewSessionError(str(exc).splitlines()[0][:300]) from exc
+        raise ReviewSessionError("unreachable")                # pragma: no cover
+
     def close(self) -> None:
         with self._lock:
             self._reset()
