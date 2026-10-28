@@ -113,6 +113,19 @@ resources:
           existing_cluster_id: ${var.cluster_id}
           libraries: ${var.pipeline_libraries}
 
+        - task_key: document_tables
+          # Short-lived: gives the demo tables and columns plain-English comments (visible in Catalog
+          # Explorer) as they appear, then finishes. Read-only with respect to the data.
+          depends_on:
+            - task_key: seed_rules
+          spark_python_task:
+            python_file: ./notebooks/document_tables.py
+            parameters:
+              - "--interval_seconds=20"
+              - "--timeout_seconds=600"
+          existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
+
         - task_key: live_monitor
           # Prints a compact one-screen status view every ~30 s (events in, rules
           # enforced, AI suggestions, what changed) so the whole loop can be
@@ -158,6 +171,23 @@ resources:
               - "--action={{job.parameters.action}}"
               - "--rule={{job.parameters.rule}}"
               - "--run_config_name={{job.parameters.run_config_name}}"
+          existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
+
+    rtm_reset_demo:
+      name: "[RTM] Reset Demo"
+      timeout_seconds: 300
+      # DESTRUCTIVE. Runs as a dry run (lists what would be removed) unless the parameter
+      # confirm is exactly RESET: Run now with different parameters > confirm = RESET.
+      parameters:
+        - name: confirm
+          default: ""
+      tasks:
+        - task_key: reset
+          spark_python_task:
+            python_file: ./notebooks/reset_demo.py
+            parameters:
+              - "--confirm={{job.parameters.confirm}}"
           existing_cluster_id: ${var.cluster_id}
           libraries: ${var.pipeline_libraries}
 
