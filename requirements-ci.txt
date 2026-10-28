@@ -1,0 +1,8 @@
+# Everything the unit tests need (no Spark, Kafka, DQX or Databricks Connect).
+# Used by .github/workflows/tests.yml; the full runtime list is requirements.txt.
+pytest>=7.4.0
+pytest-mock>=3.12.0
+pyyaml>=6.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+databricks-sdk>=0.20.0
