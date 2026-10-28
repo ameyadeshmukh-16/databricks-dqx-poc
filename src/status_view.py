@@ -71,6 +71,13 @@ def user_part(email: str | None) -> str:
     return (email or "unknown").split("@")[0]
 
 
+def rules_applied(prev: dict | None, cur: dict) -> list[str]:
+    """Names of rules that became active since the previous snapshot (sorted)."""
+    if prev is None:
+        return []
+    return sorted(set(cur["rules"]) - set(prev["rules"]))
+
+
 def since_last(prev: dict | None, cur: dict) -> list[str]:
     """Human-readable changes between two snapshots (empty list = no change)."""
     if prev is None:
@@ -79,7 +86,7 @@ def since_last(prev: dict | None, cur: dict) -> list[str]:
     new_events = (cur["clean"] + cur["quarantine"]) - (prev["clean"] + prev["quarantine"])
     if new_events > 0:
         parts.append(f"+{fmt_int(new_events)} events")
-    applied = sorted(set(cur["rules"]) - set(prev["rules"]))
+    applied = rules_applied(prev, cur)
     if applied:
         shown = ", ".join(trunc(n, 22) for n in applied[:2])
         extra = f" +{len(applied) - 2} more" if len(applied) > 2 else ""
@@ -175,20 +182,75 @@ def build_screen(snap: dict, prev: dict | None = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Data collection (the only part that touches Spark)
+# Data collection
 # ---------------------------------------------------------------------------
+# Reads go through a tiny "runner" so the same queries serve the Spark-based
+# monitor/job and the laptop live board (SQL connector):
+#   runner.query(sql) -> list[dict]      runner.table_exists(name) -> bool
 
-def collect_snapshot(spark, run_config_name: str = "streaming_event_rules", last_batches: int = 8) -> dict:
-    """Read the current state of the loop into a plain dict. Missing tables give empty sections."""
+HISTORY_BATCHES = 40
 
-    def exists(table: str) -> bool:
-        return spark.catalog.tableExists(table)
 
-    snap = {
+class SparkRunner:
+    """Runner backed by a Spark session (used inside Databricks jobs)."""
+
+    def __init__(self, spark):
+        self._spark = spark
+
+    def query(self, sql: str) -> list[dict]:
+        return [r.asDict() for r in self._spark.sql(sql).collect()]
+
+    def table_exists(self, name: str) -> bool:
+        return self._spark.catalog.tableExists(name)
+
+
+def _event_counts(runner) -> tuple[int, int]:
+    """(clean, quarantine) row counts; one round trip when both tables exist."""
+    has_clean = runner.table_exists(TABLE_STREAM_CLEAN)
+    has_quarantine = runner.table_exists(TABLE_STREAM_QUARANTINE)
+    if has_clean and has_quarantine:
+        row = runner.query(
+            f"SELECT (SELECT COUNT(*) FROM {TABLE_STREAM_CLEAN}) AS clean, "
+            f"(SELECT COUNT(*) FROM {TABLE_STREAM_QUARANTINE}) AS quarantine"
+        )[0]
+        return int(row["clean"]), int(row["quarantine"])
+    clean = int(runner.query(f"SELECT COUNT(*) AS n FROM {TABLE_STREAM_CLEAN}")[0]["n"]) if has_clean else 0
+    quarantine = (int(runner.query(f"SELECT COUNT(*) AS n FROM {TABLE_STREAM_QUARANTINE}")[0]["n"])
+                  if has_quarantine else 0)
+    return clean, quarantine
+
+
+def collect_fast(runner, last_batches: int = 8, history: int = HISTORY_BATCHES) -> dict:
+    """The cheap, fast-changing numbers: event counts and the recent batch history."""
+    clean, quarantine = _event_counts(runner)
+    out = {
         "ts": datetime.now(tz=timezone.utc),
-        "clean": spark.table(TABLE_STREAM_CLEAN).count() if exists(TABLE_STREAM_CLEAN) else 0,
-        "quarantine": spark.table(TABLE_STREAM_QUARANTINE).count() if exists(TABLE_STREAM_QUARANTINE) else 0,
+        "clean": clean,
+        "quarantine": quarantine,
+        "batch_history": [],
         "batch_pcts": [],
+    }
+    if runner.table_exists(TABLE_BATCH_METRICS):
+        rows = runner.query(
+            f"SELECT batch_id, quarantine_count, total_count, processed_at FROM {TABLE_BATCH_METRICS} "
+            f"ORDER BY batch_id DESC LIMIT {history}"
+        )
+        out["batch_history"] = [
+            {
+                "batch_id": int(r["batch_id"]),
+                "quarantine_pct": pct(r["quarantine_count"], r["total_count"]),
+                "total": int(r["total_count"]),
+                "processed_at": r["processed_at"],
+            }
+            for r in reversed(rows)
+        ]
+        out["batch_pcts"] = [b["quarantine_pct"] for b in out["batch_history"][-last_batches:]]
+    return out
+
+
+def collect_slow(runner, run_config_name: str = "streaming_event_rules") -> dict:
+    """Rules, what is firing, reviewed rules and the suggestion queue (change less often)."""
+    out = {
         "rules": [],
         "firing": {},
         "reviewed": [],
@@ -197,22 +259,15 @@ def collect_snapshot(spark, run_config_name: str = "streaming_event_rules", last
         "last_notification": None,
     }
 
-    if exists(TABLE_BATCH_METRICS):
-        rows = spark.sql(
-            f"SELECT quarantine_count, total_count FROM {TABLE_BATCH_METRICS} "
-            f"ORDER BY batch_id DESC LIMIT {last_batches}"
-        ).collect()
-        snap["batch_pcts"] = [pct(r["quarantine_count"], r["total_count"]) for r in reversed(rows)]
-
-    if exists(TABLE_RULES):
-        snap["rules"] = [
-            r["name"] for r in spark.sql(
+    if runner.table_exists(TABLE_RULES):
+        out["rules"] = [
+            r["name"] for r in runner.query(
                 f"SELECT name FROM {TABLE_RULES} WHERE run_config_name = '{run_config_name}' ORDER BY created_at, name"
-            ).collect()
+            )
         ]
 
-    if exists(TABLE_RULE_METRICS):
-        rows = spark.sql(f"""
+    if runner.table_exists(TABLE_RULE_METRICS):
+        rows = runner.query(f"""
             WITH last_runs AS (
                 SELECT run_id, MAX(recorded_at) AS t, MAX(total_records) AS total
                 FROM {TABLE_RULE_METRICS}
@@ -226,40 +281,41 @@ def collect_snapshot(spark, run_config_name: str = "streaming_event_rules", last
             )
             SELECT v.rule_name, 100.0 * v.viol / (SELECT SUM(total) FROM last_runs) AS pct
             FROM v ORDER BY pct DESC
-        """).collect()
-        snap["firing"] = {r["rule_name"]: float(r["pct"]) for r in rows if r["pct"] is not None}
+        """)
+        out["firing"] = {r["rule_name"]: float(r["pct"]) for r in rows if r["pct"] is not None}
 
-    if exists(TABLE_RULES_STAGING):
+    if runner.table_exists(TABLE_RULES_STAGING):
         base = f"FROM {TABLE_RULES_STAGING} WHERE run_config_name = '{run_config_name}'"
-        snap["reviewed"] = [
-            r.asDict() for r in spark.sql(
-                f"SELECT name, reviewed_by, reviewed_at {base} AND status = 'approved' "
-                f"ORDER BY reviewed_at DESC LIMIT 5"
-            ).collect()
-        ]
-        snap["sugg_counts"] = {
-            r["status"]: r["n"] for r in spark.sql(f"SELECT status, COUNT(*) AS n {base} GROUP BY status").collect()
+        out["reviewed"] = runner.query(
+            f"SELECT name, reviewed_by, reviewed_at {base} AND status = 'approved' "
+            f"ORDER BY reviewed_at DESC LIMIT 5"
+        )
+        out["sugg_counts"] = {
+            r["status"]: int(r["n"]) for r in runner.query(f"SELECT status, COUNT(*) AS n {base} GROUP BY status")
         }
-        snap["pending"] = [
-            r.asDict() for r in spark.sql(
-                f"SELECT name, criticality, source {base} AND status = 'pending' ORDER BY suggested_at DESC LIMIT 5"
-            ).collect()
-        ]
+        out["pending"] = runner.query(
+            f"SELECT name, criticality, source {base} AND status = 'pending' ORDER BY suggested_at DESC LIMIT 5"
+        )
 
-    if exists(TABLE_REVIEW_NOTIFICATIONS):
-        rows = spark.sql(
+    if runner.table_exists(TABLE_REVIEW_NOTIFICATIONS):
+        rows = runner.query(
             f"SELECT created_at, new_count FROM {TABLE_REVIEW_NOTIFICATIONS} "
             f"WHERE run_config_name = '{run_config_name}' ORDER BY created_at DESC LIMIT 1"
-        ).collect()
+        )
         if rows:
-            snap["last_notification"] = rows[0].asDict()
+            out["last_notification"] = rows[0]
 
-    return snap
+    return out
+
+
+def collect_snapshot(runner, run_config_name: str = "streaming_event_rules", last_batches: int = 8) -> dict:
+    """Full snapshot = fast + slow parts. Missing tables give empty sections, never errors."""
+    return {**collect_fast(runner, last_batches), **collect_slow(runner, run_config_name)}
 
 
 def render_snapshot(spark, run_config_name: str = "streaming_event_rules",
                     last_batches: int = 8, prev: dict | None = None) -> dict:
     """Print the one-screen view and return the snapshot (pass it back as prev for the delta line)."""
-    snap = collect_snapshot(spark, run_config_name, last_batches)
+    snap = collect_snapshot(SparkRunner(spark), run_config_name, last_batches)
     print(build_screen(snap, prev), flush=True)
     return snap

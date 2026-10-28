@@ -161,3 +161,103 @@ def test_delta_line_only_appears_with_a_previous_snapshot():
     assert "▲ since last snapshot: no change" in build_screen(_snap(), prev=_snap())
     prev = _snap(clean=1000, quarantine=1457)
     assert "+240 events" in build_screen(_snap(), prev=prev)
+
+
+# ---------------------------------------------------------------------------
+# collect_* with a fake runner (no Spark, no network)
+# ---------------------------------------------------------------------------
+
+from decimal import Decimal
+
+from src.status_view import collect_fast, collect_slow, collect_snapshot
+
+
+class FakeRunner:
+    """Answers queries by matching a keyword in the SQL; table existence is configurable."""
+
+    def __init__(self, tables, answers):
+        self.tables = set(tables)
+        self.answers = answers          # {keyword: rows}
+        self.calls = []
+
+    def table_exists(self, name):
+        return any(name.endswith(t) for t in self.tables)
+
+    def query(self, sql):
+        self.calls.append(sql)
+        for key, rows in self.answers.items():
+            if key in sql:
+                return rows
+        raise AssertionError(f"unexpected query: {sql[:80]}")
+
+
+ALL_TABLES = ["stream_events_clean", "stream_events_quarantine", "stream_batch_metrics", "dq_rules_registry",
+              "dq_rule_metrics", "dq_rules_staging", "dq_review_notifications"]
+
+
+def _runner(tables=ALL_TABLES):
+    t0 = datetime(2026, 10, 28, 6, 0, 0)
+    return FakeRunner(tables, {
+        "AS quarantine": [{"clean": 100, "quarantine": 150}],           # both counts in one query
+        "stream_batch_metrics": [
+            {"batch_id": 3, "quarantine_count": 6, "total_count": 10, "processed_at": t0},
+            {"batch_id": 2, "quarantine_count": 5, "total_count": 10, "processed_at": t0},
+            {"batch_id": 1, "quarantine_count": 4, "total_count": 10, "processed_at": t0},
+        ],
+        "dq_rules_registry": [{"name": "a"}, {"name": "b"}],
+        "last_runs": [{"rule_name": "a", "pct": Decimal("12.5")}, {"rule_name": "b", "pct": None}],
+        "status = 'approved'": [{"name": "b", "reviewed_by": "x@y.z", "reviewed_at": t0}],
+        "GROUP BY status": [{"status": "pending", "n": 3}, {"status": "approved", "n": Decimal("1")}],
+        "status = 'pending'": [{"name": "p", "criticality": "error", "source": "llm"}],
+        "dq_review_notifications": [{"created_at": t0, "new_count": 5}],
+    })
+
+
+def test_collect_fast_counts_and_history_oldest_first():
+    fast = collect_fast(_runner(), last_batches=2)
+    assert fast["clean"] == 100 and fast["quarantine"] == 150
+    assert [b["batch_id"] for b in fast["batch_history"]] == [1, 2, 3]       # oldest -> newest
+    assert fast["batch_history"][-1]["quarantine_pct"] == 60.0
+    assert fast["batch_pcts"] == [50.0, 60.0]                                  # last 2 only
+
+
+def test_collect_slow_shapes_rows_and_converts_numbers():
+    slow = collect_slow(_runner())
+    assert slow["rules"] == ["a", "b"]
+    assert slow["firing"] == {"a": 12.5}                                       # Decimal -> float, None dropped
+    assert isinstance(slow["firing"]["a"], float)
+    assert slow["reviewed"][0]["name"] == "b"
+    assert slow["sugg_counts"] == {"pending": 3, "approved": 1}
+    assert slow["pending"][0]["source"] == "llm"
+    assert slow["last_notification"]["new_count"] == 5
+
+
+def test_missing_tables_give_empty_sections_not_errors():
+    snap = collect_snapshot(FakeRunner([], {}))
+    assert snap["clean"] == 0 and snap["quarantine"] == 0
+    assert snap["batch_history"] == [] and snap["rules"] == [] and snap["firing"] == {}
+    assert snap["sugg_counts"] == {} and snap["last_notification"] is None
+    assert "waiting for the first events" in build_screen(snap)
+
+
+def test_counts_use_one_query_when_both_tables_exist():
+    runner = _runner()
+    collect_fast(runner)
+    assert sum("COUNT(*)" in c for c in runner.calls) == 1
+
+
+def test_counts_fall_back_to_single_table_queries():
+    runner = FakeRunner(["stream_events_clean"], {"COUNT(*) AS n": [{"n": 42}]})
+    fast = collect_fast(runner)
+    assert fast["clean"] == 42 and fast["quarantine"] == 0
+
+
+def test_fast_collection_does_not_touch_the_slow_tables():
+    runner = _runner()
+    collect_fast(runner)
+    assert not any("dq_rules" in c or "dq_rule_metrics" in c for c in runner.calls)
+
+
+def test_full_snapshot_renders_a_screen():
+    text = build_screen(collect_snapshot(_runner()))
+    assert "250 total" in text and "ADDED BY HUMAN REVIEW" in text
