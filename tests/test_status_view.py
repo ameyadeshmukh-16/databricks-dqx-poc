@@ -261,3 +261,49 @@ def test_fast_collection_does_not_touch_the_slow_tables():
 def test_full_snapshot_renders_a_screen():
     text = build_screen(collect_snapshot(_runner()))
     assert "250 total" in text and "ADDED BY HUMAN REVIEW" in text
+
+
+# ---------------------------------------------------------------------------
+# detail=True: latest quarantined events and the decision log
+# ---------------------------------------------------------------------------
+
+def _detail_runner(tables=ALL_TABLES):
+    t0 = datetime(2026, 10, 28, 6, 0, 0)
+    runner = _runner(tables)
+    runner.answers = {
+        "transform(_errors": [{"event_id": "E1", "store_id": "S1", "division": "011", "quantity": -1,
+                               "unit_price": 1.5, "ingested_at": t0, "rules": "quantity_positive",
+                               "reason": "Value '-1' is less than limit: 1"}],
+        "s.status <> 'pending'": [{"name": "a", "status": "approved", "criticality": "error", "source": "llm",
+                                   "llm_backend": "openrouter:m", "reviewed_by": "x@y.z", "reviewed_at": t0,
+                                   "first_caught_at": None}],
+        "status <> 'pending'": [{"name": "b", "status": "rejected", "criticality": "error", "source": "llm",
+                                 "llm_backend": None, "reviewed_by": "x@y.z", "reviewed_at": t0,
+                                 "first_caught_at": None}],
+        **runner.answers,
+    }
+    return runner
+
+
+def test_detail_is_off_by_default_and_costs_no_extra_queries():
+    runner = _detail_runner()
+    slow = collect_slow(runner)
+    assert slow["recent_quarantine"] == [] and slow["decisions"] == []
+    assert not any("transform(_errors" in c or "<> 'pending'" in c for c in runner.calls)
+
+
+def test_detail_reads_the_latest_events_and_decisions():
+    slow = collect_slow(_detail_runner(), detail=True)
+    assert slow["recent_quarantine"][0]["rules"] == "quantity_positive"
+    assert slow["decisions"][0]["name"] == "a"
+
+
+def test_decisions_still_work_when_the_metrics_table_does_not_exist_yet():
+    tables = [t for t in ALL_TABLES if t != "dq_rule_metrics"]
+    slow = collect_slow(_detail_runner(tables), detail=True)
+    assert slow["decisions"][0]["name"] == "b"            # the query without the first-catch lookup
+
+
+def test_detail_with_missing_tables_is_empty_not_an_error():
+    slow = collect_slow(FakeRunner([], {}), detail=True)
+    assert slow["recent_quarantine"] == [] and slow["decisions"] == []

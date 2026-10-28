@@ -248,8 +248,13 @@ def collect_fast(runner, last_batches: int = 8, history: int = HISTORY_BATCHES) 
     return out
 
 
-def collect_slow(runner, run_config_name: str = "streaming_event_rules") -> dict:
-    """Rules, what is firing, reviewed rules and the suggestion queue (change less often)."""
+def collect_slow(runner, run_config_name: str = "streaming_event_rules", detail: bool = False) -> dict:
+    """
+    Rules, what is firing, reviewed rules and the suggestion queue (change less often).
+
+    detail=True (the live board) also reads the latest quarantined events with the reason each was
+    caught, and the decision log; the lighter text monitor leaves it off.
+    """
     out = {
         "rules": [],
         "firing": {},
@@ -257,6 +262,8 @@ def collect_slow(runner, run_config_name: str = "streaming_event_rules") -> dict
         "sugg_counts": {},
         "pending": [],
         "last_notification": None,
+        "recent_quarantine": [],
+        "decisions": [],
     }
 
     if runner.table_exists(TABLE_RULES):
@@ -305,6 +312,31 @@ def collect_slow(runner, run_config_name: str = "streaming_event_rules") -> dict
         )
         if rows:
             out["last_notification"] = rows[0]
+
+    if detail:
+        if runner.table_exists(TABLE_STREAM_QUARANTINE):
+            out["recent_quarantine"] = runner.query(
+                f"SELECT event_id, store_id, division, quantity, unit_price, ingested_at, "
+                f"concat_ws(', ', transform(_errors, e -> e.name)) AS rules, "
+                f"element_at(transform(_errors, e -> e.message), 1) AS reason "
+                f"FROM {TABLE_STREAM_QUARANTINE} ORDER BY ingested_at DESC LIMIT 10"
+            )
+        if runner.table_exists(TABLE_RULES_STAGING):
+            # first_caught_at: the first time the rule caught an event after it was decided
+            # (empty for warnings and for rules that have not fired: the metrics count errors only)
+            out["decisions"] = runner.query(
+                f"SELECT s.name, s.status, s.criticality, s.source, s.llm_backend, s.reviewed_by, s.reviewed_at, "
+                f"(SELECT MIN(m.recorded_at) FROM {TABLE_RULE_METRICS} m WHERE m.rule_name = s.name "
+                f"AND m.run_config_name = s.run_config_name AND m.run_type = 'streaming' "
+                f"AND m.recorded_at >= s.reviewed_at) AS first_caught_at "
+                f"FROM {TABLE_RULES_STAGING} s WHERE s.run_config_name = '{run_config_name}' "
+                f"AND s.status <> 'pending' ORDER BY s.reviewed_at DESC LIMIT 50"
+            ) if runner.table_exists(TABLE_RULE_METRICS) else runner.query(
+                f"SELECT name, status, criticality, source, llm_backend, reviewed_by, reviewed_at, "
+                f"CAST(NULL AS TIMESTAMP) AS first_caught_at "
+                f"FROM {TABLE_RULES_STAGING} WHERE run_config_name = '{run_config_name}' "
+                f"AND status <> 'pending' ORDER BY reviewed_at DESC LIMIT 50"
+            )
 
     return out
 

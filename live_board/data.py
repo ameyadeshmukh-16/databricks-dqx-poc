@@ -11,9 +11,12 @@ Data layer for the live demo board (runs on the presenter's laptop).
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import re
 import time
+from datetime import timezone
 
 from src.status_view import rules_applied, short_time, user_part
 
@@ -136,3 +139,97 @@ def should_refresh_slow(last_read_at: float | None, now: float, ttl: float = SLO
 
 def now() -> float:
     return time.time()
+
+
+# ---------------------------------------------------------------------------
+# Latest quarantined events and the decision log
+# ---------------------------------------------------------------------------
+
+DASH = "—"
+
+
+def _naive_utc(ts):
+    """A datetime without tzinfo, in UTC (rows from different readers may or may not carry a timezone)."""
+    if ts is None:
+        return None
+    if ts.tzinfo is not None:
+        ts = ts.astimezone(timezone.utc).replace(tzinfo=None)
+    return ts
+
+
+def _clock(ts) -> str:
+    ts = _naive_utc(ts)
+    return ts.strftime("%H:%M:%S") if ts else DASH
+
+
+def _or_dash(value):
+    return DASH if value is None or value == "" else value
+
+
+def quarantine_table_rows(snapshot: dict) -> list[dict]:
+    """The latest quarantined events with the rule(s) that caught each and the reason, ready for a table."""
+    rows = []
+    for r in snapshot.get("recent_quarantine", []):
+        price = r.get("unit_price")
+        rows.append({
+            "time (UTC)": _clock(r.get("ingested_at")),
+            "event": _or_dash(r.get("event_id")),
+            "store": _or_dash(r.get("store_id")),
+            "division": _or_dash(r.get("division")),
+            "qty": _or_dash(r.get("quantity")),
+            "price": f"{price:.2f}" if isinstance(price, (int, float)) else DASH,
+            "caught by": _or_dash(r.get("rules")),
+            "why": _or_dash(r.get("reason")),
+        })
+    return rows
+
+
+def seconds_to_first_catch(decision: dict) -> int | None:
+    """Seconds from the decision until the rule first caught an event (None if it has not, or never will)."""
+    decided, caught = _naive_utc(decision.get("reviewed_at")), _naive_utc(decision.get("first_caught_at"))
+    if decided is None or caught is None:
+        return None
+    return max(0, int((caught - decided).total_seconds()))
+
+
+def _decision_label(status: str) -> str:
+    return {"approved": "Approved", "rejected": "Rejected"}.get(status, str(status).title())
+
+
+def decision_rows(snapshot: dict) -> list[dict]:
+    """Decisions for the screen: reviewer shortened to the user name, times as a clock."""
+    rows = []
+    for d in snapshot.get("decisions", []):
+        seconds = seconds_to_first_catch(d)
+        rows.append({
+            "decided (UTC)": _clock(d.get("reviewed_at")),
+            "decision": _decision_label(d.get("status")),
+            "rule": d.get("name"),
+            "severity": _or_dash(d.get("criticality")),
+            "suggested by": _or_dash(d.get("llm_backend") or ("statistical analysis" if d.get("source") == "statistical" else d.get("source"))),
+            "reviewer": user_part(d.get("reviewed_by")),
+            "first caught after": f"{seconds} s" if seconds is not None else DASH,
+        })
+    return rows
+
+
+CSV_COLUMNS = ("decided_at_utc", "decision", "rule", "severity", "source", "suggested_by",
+               "reviewer", "first_caught_at_utc", "seconds_to_first_catch")
+
+
+def decision_log_csv(snapshot: dict) -> str:
+    """The audit evidence: full reviewer identity and exact timestamps, standard CSV quoting."""
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\n")
+    writer.writerow(CSV_COLUMNS)
+    for d in snapshot.get("decisions", []):
+        decided, caught = _naive_utc(d.get("reviewed_at")), _naive_utc(d.get("first_caught_at"))
+        seconds = seconds_to_first_catch(d)
+        writer.writerow([
+            decided.isoformat(sep=" ", timespec="seconds") if decided else "",
+            d.get("status", ""), d.get("name", ""), d.get("criticality", ""), d.get("source", ""),
+            d.get("llm_backend") or "", d.get("reviewed_by") or "",
+            caught.isoformat(sep=" ", timespec="seconds") if caught else "",
+            "" if seconds is None else seconds,
+        ])
+    return out.getvalue()

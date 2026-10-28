@@ -111,3 +111,101 @@ def test_slow_data_refreshes_on_ttl():
     assert should_refresh_slow(None, 100)
     assert not should_refresh_slow(90, 100, ttl=30)
     assert should_refresh_slow(60, 100, ttl=30)
+
+
+# ---------------------------------------------------------------------------
+# latest quarantined events + decision log
+# ---------------------------------------------------------------------------
+
+import csv
+import io
+from datetime import timezone
+
+from live_board.data import (
+    DASH, decision_log_csv, decision_rows, quarantine_table_rows, seconds_to_first_catch,
+)
+
+
+def _event(**over):
+    row = {"event_id": "EVT1", "store_id": "STORE02", "division": "011", "quantity": -1, "unit_price": 146.6,
+           "ingested_at": datetime(2026, 10, 28, 10, 0, 31), "rules": "quantity_positive, quantity_integer",
+           "reason": "Value '-1' in Column 'quantity' is less than limit: 1"}
+    row.update(over)
+    return row
+
+
+def _decision(**over):
+    row = {"name": "quantity_min_value", "status": "approved", "criticality": "error", "source": "statistical",
+           "llm_backend": None, "reviewed_by": "ameyad@bitwiseglobal.net",
+           "reviewed_at": datetime(2026, 10, 28, 6, 27, 22), "first_caught_at": datetime(2026, 10, 28, 6, 28, 16)}
+    row.update(over)
+    return row
+
+
+def test_quarantine_rows_show_the_event_the_rules_and_the_reason():
+    (row,) = quarantine_table_rows({"recent_quarantine": [_event()]})
+    assert row["time (UTC)"] == "10:00:31" and row["event"] == "EVT1" and row["price"] == "146.60"
+    assert row["caught by"] == "quantity_positive, quantity_integer" and "less than limit" in row["why"]
+
+
+def test_missing_values_become_a_dash_not_none():
+    (row,) = quarantine_table_rows({"recent_quarantine": [_event(division=None, quantity=None, unit_price=None,
+                                                                 reason=None)]})
+    assert row["division"] == DASH and row["qty"] == DASH and row["price"] == DASH and row["why"] == DASH
+
+
+def test_no_events_gives_an_empty_table():
+    assert quarantine_table_rows({}) == [] and quarantine_table_rows({"recent_quarantine": []}) == []
+
+
+def test_time_zone_aware_timestamps_are_shown_in_utc():
+    from datetime import timedelta
+    tz = timezone(timedelta(hours=5, minutes=30))
+    (row,) = quarantine_table_rows({"recent_quarantine": [_event(ingested_at=datetime(2026, 10, 28, 15, 30, 0, tzinfo=tz))]})
+    assert row["time (UTC)"] == "10:00:00"
+
+
+def test_seconds_to_first_catch():
+    assert seconds_to_first_catch(_decision()) == 54
+    assert seconds_to_first_catch(_decision(first_caught_at=None)) is None
+    assert seconds_to_first_catch(_decision(reviewed_at=None)) is None
+    assert seconds_to_first_catch(_decision(first_caught_at=datetime(2026, 10, 28, 6, 0, 0))) == 0   # never negative
+
+
+def test_mixed_aware_and_naive_timestamps_do_not_crash():
+    aware = datetime(2026, 10, 28, 6, 28, 16, tzinfo=timezone.utc)
+    assert seconds_to_first_catch(_decision(first_caught_at=aware)) == 54
+
+
+def test_decision_rows_for_the_screen():
+    rows = decision_rows({"decisions": [_decision(), _decision(name="x", status="rejected", first_caught_at=None,
+                                                               llm_backend="openrouter:poolside/laguna-s-2.1:free")]})
+    assert rows[0]["decision"] == "Approved" and rows[0]["reviewer"] == "ameyad"
+    assert rows[0]["first caught after"] == "54 s" and rows[0]["suggested by"] == "statistical analysis"
+    assert rows[1]["decision"] == "Rejected" and rows[1]["first caught after"] == DASH
+    assert rows[1]["suggested by"] == "openrouter:poolside/laguna-s-2.1:free"
+    assert "bitwiseglobal" not in str(rows)
+
+
+def test_csv_keeps_the_full_identity_and_exact_times():
+    text = decision_log_csv({"decisions": [_decision()]})
+    (header, row) = list(csv.reader(io.StringIO(text)))
+    assert header[0] == "decided_at_utc" and header[-1] == "seconds_to_first_catch"
+    assert row[0] == "2026-10-28 06:27:22" and row[6] == "ameyad@bitwiseglobal.net"
+    assert row[7] == "2026-10-28 06:28:16" and row[8] == "54"
+
+
+def test_csv_quotes_commas_and_quotes_in_values():
+    text = decision_log_csv({"decisions": [_decision(name='odd, "name"', llm_backend="a,b")]})
+    row = list(csv.reader(io.StringIO(text)))[1]
+    assert row[2] == 'odd, "name"' and row[5] == "a,b"
+
+
+def test_csv_with_no_decisions_is_just_the_header():
+    lines = decision_log_csv({"decisions": []}).strip().splitlines()
+    assert len(lines) == 1 and lines[0].startswith("decided_at_utc")
+
+
+def test_csv_leaves_unknown_values_empty():
+    row = list(csv.reader(io.StringIO(decision_log_csv({"decisions": [_decision(first_caught_at=None, llm_backend=None)]}))))[1]
+    assert row[5] == "" and row[7] == "" and row[8] == ""

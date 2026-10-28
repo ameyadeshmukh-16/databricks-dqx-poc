@@ -36,8 +36,11 @@ from live_board.data import (
     SqlRunner,
     banner_for,
     batch_chart_rows,
+    decision_log_csv,
+    decision_rows,
     now,
     pause_status,
+    quarantine_table_rows,
     reviewed_cards,
     rules_chart_rows,
     should_refresh_slow,
@@ -260,6 +263,13 @@ def render(snap: dict, prev: dict | None, seconds_left: int | None) -> None:
         else:
             st.caption("No rule has caught an event yet.")
 
+    st.subheader("Latest quarantined events — and why")
+    events = quarantine_table_rows(snap)
+    if events:
+        st.dataframe(pd.DataFrame(events), hide_index=True, width="stretch")
+    else:
+        st.caption("No quarantined events yet.")
+
     cards = reviewed_cards(snap)
     if cards:
         st.subheader("★ Added by human review")
@@ -277,6 +287,21 @@ def render(snap: dict, prev: dict | None, seconds_left: int | None) -> None:
         st.caption(f"Last review alert at {short_time(note['created_at'])} UTC (+{note['new_count']} new)")
 
     render_queue(snap)
+    render_decision_log(snap)
+
+
+def render_decision_log(snap: dict) -> None:
+    st.subheader("Decision log (audit trail)")
+    log = decision_rows(snap)
+    if not log:
+        st.caption("No decisions yet. Every approval and rejection will be listed here with who made it and when.")
+        return
+    st.dataframe(pd.DataFrame(log), hide_index=True, width="stretch")
+    stamp = snap["ts"].strftime("%Y%m%d_%H%M%S")
+    st.download_button("Download decision log (CSV)", data=decision_log_csv(snap),
+                       file_name=f"decision_log_{stamp}.csv", mime="text/csv", key="download_decisions")
+    st.caption("“First caught after” is empty for warnings and for rules that have not caught an event yet "
+               "(the rule metrics count errors only). The CSV carries the full reviewer identity.")
 
 
 # ---------------------------------------------------------------------------
@@ -315,7 +340,7 @@ def board() -> None:
         runner = get_runner(target)
         fast = collect_fast(runner)
         if should_refresh_slow(ss.slow_at, now()):
-            ss.slow = collect_slow(runner)
+            ss.slow = collect_slow(runner, detail=True)
             ss.slow_at = now()
             _update_previews(runner, ss.slow["pending"])
         snap = {**fast, **ss.slow}
