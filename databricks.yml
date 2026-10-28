@@ -10,7 +10,7 @@ variables:
     default: "1026-013008-6rqlr2d7"
   streaming_max_runtime_seconds:
     description: "Hard cap on one run of the streaming job (cost guard): the run and every task are stopped after this long"
-    default: 600
+    default: 900
   pipeline_libraries:
     description: "PyPI libraries installed on the cluster for every task"
     type: complex
@@ -47,11 +47,29 @@ resources:
   jobs:
     rtm_kafka_streaming:
       name: "[RTM] Kafka Streaming Pipeline"
-      # Continuous flow: stream + producer + suggester all run until this cap, then
-      # Databricks cancels the whole run ("Timed out" is the expected final status).
+      # One-click demo pipeline:
+      #   seed_rules -> stream_and_validate, produce_events,
+      #                 suggest_rules_continuously, live_monitor
+      # The four long-running tasks start together once the rules are seeded and
+      # coordinate through tables (the stream never finishes, so nothing can
+      # depend on it). The job-level cap below stops the whole run — "Timed out"
+      # is the expected final status, and it prevents a forgotten run billing.
       timeout_seconds: ${var.streaming_max_runtime_seconds}
       tasks:
+        - task_key: seed_rules
+          # Idempotent: rule sets that already have rows are skipped, so approved
+          # rules are never overwritten; on an empty catalog this creates the
+          # schema and the rules registry.
+          spark_python_task:
+            python_file: ./notebooks/seed_rules_registry.py
+            parameters:
+              - "--force=false"
+          existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
+
         - task_key: stream_and_validate
+          depends_on:
+            - task_key: seed_rules
           spark_python_task:
             python_file: ./notebooks/kafka_stream_dqx_validation.py
           existing_cluster_id: ${var.cluster_id}
@@ -59,12 +77,12 @@ resources:
           timeout_seconds: 0    # run indefinitely until stopped
 
         - task_key: produce_events
-          # No depends_on: stream_and_validate never terminates (it runs
-          # indefinitely), so Databricks depends_on — which waits for the
-          # upstream task to reach a terminal state — would never fire. Both
-          # tasks start concurrently; produce_events polls a readiness signal
-          # (stream_consumer_ready) written by the consumer once it is
+          # Depends only on the seed: stream_and_validate never terminates, so
+          # depends_on it would never fire. produce_events polls a readiness
+          # signal (stream_consumer_ready) written by the consumer once it is
           # actually listening, before it sends any events.
+          depends_on:
+            - task_key: seed_rules
           spark_python_task:
             python_file: ./notebooks/kafka_producer_job.py
             parameters:
@@ -75,9 +93,11 @@ resources:
           libraries: ${var.pipeline_libraries}
 
         - task_key: suggest_rules_continuously
-          # No depends_on (the stream and producer never finish). Waits for the
-          # quarantine table to fill, then keeps staging NEW rule suggestions for
-          # human review every few minutes and records a review notification.
+          # Waits for the quarantine table to fill, then keeps staging NEW rule
+          # suggestions for human review every few minutes and records a review
+          # notification.
+          depends_on:
+            - task_key: seed_rules
           spark_python_task:
             python_file: ./notebooks/streaming_rule_suggester.py
             parameters:
@@ -86,6 +106,21 @@ resources:
               - "--min_new_rows=30"
               - "--max_new=5"
               - "--llm_backend=openrouter"
+          existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.pipeline_libraries}
+
+        - task_key: live_monitor
+          # Prints a fresh status snapshot every 45 s (event flow, active rules,
+          # rules firing, pending suggestions, notifications) so the whole loop
+          # can be followed from this task's output. Read-only.
+          depends_on:
+            - task_key: seed_rules
+          spark_python_task:
+            python_file: ./notebooks/live_monitor.py
+            parameters:
+              - "--interval_seconds=45"
+              - "--run_config_name=streaming_event_rules"
+              - "--last_batches=5"
           existing_cluster_id: ${var.cluster_id}
           libraries: ${var.pipeline_libraries}
 
