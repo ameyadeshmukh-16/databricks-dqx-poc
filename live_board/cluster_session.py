@@ -59,7 +59,7 @@ class ReviewSession:
     def client(self):
         if self._client is None:
             from databricks.sdk import WorkspaceClient
-            self._client = WorkspaceClient(profile=self._profile)
+            self._client = WorkspaceClient(profile=self._profile or None)   # empty = the environment's own login
         return self._client
 
     @property

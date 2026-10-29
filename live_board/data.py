@@ -48,7 +48,7 @@ class SqlRunner:
         from databricks import sql                      # imported here so tests do not need the package
         from databricks.sdk.core import Config
 
-        cfg = Config(profile=profile)
+        cfg = Config(profile=profile or None)          # empty profile = the environment's own login (cluster run)
         host = cfg.host.replace("https://", "").rstrip("/")
         self.target = target
         self.http_path = os.environ.get("BOARD_HTTP_PATH") or http_path(target, host)

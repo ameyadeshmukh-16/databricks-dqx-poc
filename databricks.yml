@@ -33,6 +33,17 @@ variables:
       - pypi:
           package: openai>=1.0.0
 
+  board_libraries:
+    description: "PyPI libraries for the live board task (websockets is held below 17 so live updates survive the workspace proxy)"
+    type: complex
+    default:
+      - pypi:
+          package: streamlit>=1.50
+      - pypi:
+          package: databricks-sql-connector>=3.0
+      - pypi:
+          package: websockets>=16.1.1,<17
+
 targets:
   dev:
     mode: development
@@ -140,6 +151,33 @@ resources:
               - "--last_batches=8"
           existing_cluster_id: ${var.cluster_id}
           libraries: ${var.pipeline_libraries}
+
+        - task_key: live_board
+          # Serves the Streamlit live board from this cluster. Open the link printed in this
+          # task's logs (https://<workspace>/driver-proxy/o/<org>/<cluster>/8501/) in a browser
+          # signed in to the workspace — nothing is installed on the presenter's laptop.
+          depends_on:
+            - task_key: seed_rules
+          spark_python_task:
+            python_file: ./notebooks/live_board_server.py
+            parameters:
+              - "--port=8501"
+          existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.board_libraries}
+
+    rtm_live_board:
+      name: "[RTM] Live Board"
+      # The board on its own (for example to show results after the stream has stopped).
+      # Stops itself after 30 minutes.
+      timeout_seconds: 1800
+      tasks:
+        - task_key: live_board
+          spark_python_task:
+            python_file: ./notebooks/live_board_server.py
+            parameters:
+              - "--port=8501"
+          existing_cluster_id: ${var.cluster_id}
+          libraries: ${var.board_libraries}
 
     rtm_seed_rules:
       name: "[RTM] Seed Rules Registry"
