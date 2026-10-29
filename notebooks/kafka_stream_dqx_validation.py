@@ -138,6 +138,7 @@ logger.info("Loaded %d streaming rules from Delta table", len(checks))
 # while the stream is running is enforced on the next batch (no restart). The new
 # set replaces the active one only if DQX validates it; otherwise the previous
 # rules stay in force.
+from src.delta_retry import retry_on_conflict
 from src.rule_reload import fallback_culprits, rule_set_changes, without_blocked
 
 # Rules that passed validation but could not be applied to real events (e.g. an unknown column).
@@ -398,16 +399,25 @@ def process(batch_df, batch_id):
     quarantine_count = quarantine.count()
 
     #clean.write.mode("append").saveAsTable(TABLE_STREAM_CLEAN)
-    clean.write \
-    .mode("append") \
-    .option("mergeSchema", "true") \
-    .saveAsTable(TABLE_STREAM_CLEAN)
+    # Another task (e.g. the table-comment task) can change a table's metadata at the very moment
+    # of a write; Delta then rejects it as a conflict. The write is all-or-nothing, so repeat it.
+    def _retrying(label, write):
+        return retry_on_conflict(
+            write,
+            on_retry=lambda attempt, exc: logger.warning(
+                "Batch %d: write to %s conflicted with another update, retrying (%d)", batch_id, label, attempt),
+        )
+
+    _retrying(TABLE_STREAM_CLEAN, lambda: clean.write
+              .mode("append")
+              .option("mergeSchema", "true")
+              .saveAsTable(TABLE_STREAM_CLEAN))
 
     #quarantine.write.mode("append").saveAsTable(TABLE_STREAM_QUARANTINE)
-    quarantine.write \
-    .mode("append") \
-    .option("mergeSchema", "true") \
-    .saveAsTable(TABLE_STREAM_QUARANTINE)
+    _retrying(TABLE_STREAM_QUARANTINE, lambda: quarantine.write
+              .mode("append")
+              .option("mergeSchema", "true")
+              .saveAsTable(TABLE_STREAM_QUARANTINE))
 
     logger.info(
         "Batch %d: %d clean | %d quarantined",
@@ -415,7 +425,7 @@ def process(batch_df, batch_id):
     )
 
     # Write one aggregate metrics row per batch (clean/quarantine totals)
-    (
+    _retrying(TABLE_BATCH_METRICS, lambda: (
         batch_df.sparkSession
             .createDataFrame(
                 [(batch_id, clean_count, quarantine_count, clean_count + quarantine_count)],
@@ -424,7 +434,7 @@ def process(batch_df, batch_id):
             .withColumn("processed_at", current_timestamp())
             .write.mode("append")
             .saveAsTable(TABLE_BATCH_METRICS)
-    )
+    ))
 
     # Write per-rule violation breakdown to dq_rule_metrics
     from ai_suggester.rule_metrics import compute_rule_metrics, write_rule_metrics
@@ -433,7 +443,7 @@ def process(batch_df, batch_id):
     _metrics = compute_rule_metrics(
         quarantine, clean_count + quarantine_count, _run_id, "streaming", STREAMING_RULE_CONFIG_NAME,
     )
-    write_rule_metrics(_metrics, batch_df.sparkSession)
+    _retrying("dq_rule_metrics", lambda: write_rule_metrics(_metrics, batch_df.sparkSession))
 
 # -----------------------------------
 # Start Stream

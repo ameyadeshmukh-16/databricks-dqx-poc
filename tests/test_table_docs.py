@@ -86,3 +86,22 @@ def test_the_catalogue_covers_every_table_the_streaming_pipeline_creates():
 
 def test_every_documented_column_has_text():
     assert all(text.strip() for doc in TABLE_DOCS.values() for text in doc["columns"].values())
+
+
+def test_stream_owned_tables_wait_until_the_stream_has_settled():
+    from src.table_docs import STREAM_OWNED, docs_to_apply
+
+    early = docs_to_apply(set(), batches_written=0)
+    assert not set(STREAM_OWNED) & set(early)
+    assert "dq_rules_registry" in early                      # tables the stream does not write to are not held back
+
+    settled = docs_to_apply(set(), batches_written=3)
+    assert set(STREAM_OWNED) <= set(settled)
+
+
+def test_tables_already_documented_are_not_touched_again():
+    from src.table_docs import docs_to_apply
+
+    left = docs_to_apply({"stream_events_clean", "dq_rules_registry"}, batches_written=10)
+    assert "stream_events_clean" not in left and "dq_rules_registry" not in left
+    assert "stream_events_quarantine" in left

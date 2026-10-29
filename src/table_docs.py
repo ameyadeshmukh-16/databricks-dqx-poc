@@ -157,6 +157,24 @@ STREAMING_TABLES = (
 )
 
 
+# Tables the running stream writes to. Changing their metadata while the stream creates and first writes
+# them makes its write conflict, so they are documented only after the stream has finished a few batches.
+STREAM_OWNED = (
+    "stream_events_clean", "stream_events_quarantine", "stream_batch_metrics", "stream_consumer_ready",
+    "dq_rule_metrics",
+)
+MIN_STREAM_BATCHES = 3
+
+
+def docs_to_apply(done: set, batches_written: int, min_batches: int = MIN_STREAM_BATCHES,
+                  docs: dict | None = None) -> dict:
+    """The comment catalogue entries still to apply now: not already done, and stream-owned tables only once the stream is settled."""
+    docs = TABLE_DOCS if docs is None else docs
+    settled = batches_written >= min_batches
+    return {name: doc for name, doc in docs.items()
+            if name not in done and (settled or name not in STREAM_OWNED)}
+
+
 def sql_literal(text: str) -> str:
     """Single-quoted Spark SQL string literal (backslashes and quotes escaped)."""
     return "'" + text.replace("\\", "\\\\").replace("'", "\\'") + "'"
